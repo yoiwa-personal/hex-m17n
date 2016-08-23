@@ -48,6 +48,8 @@ our $chreaten = 0; # number of characters already processed
 our $chrforward = 0; # number of extra characters already emitted to output
 our $charbased = 0;
 
+our $widthmethod = 0;
+
 use constant { BUFSIZE => 1024 };
 use Getopt::Long qw(:config bundling permute);
 
@@ -59,7 +61,8 @@ GetOptions ("shift-jis|s" => sub { $incode = 1 },
 	    "euc-jp|e" => sub { $incode = 2 },
 	    "utf-8|u" => sub { $incode = 3 },
 	    "decorate|d!" => \$decorate,
-	    "char|c" => \$charbased,
+	    "char|c:i" => \$charbased,
+	    "charwidth=i" => \$widthmethod,
 	   ) or die;
 
 open IN, $ARGV[0] or die "open: $!";
@@ -143,11 +146,18 @@ exit 0;
 	return if $_ eq '';
 	die if $n == 0;
 	# $chrforward = length($sj) - 1;
-	if (/\p{Ea: W}|\p{Ea: F}/) {
+	my $width = wcwidth($_);
+	if ($width == 2) {
 	    $chrforward = 1;
 	    $chrforward = 0 if $n == 0;
+	} elsif ($width == 0) {
+	    $chrforward = 0;
+	    $_ = " $_";
 	} else {
 	    $chrforward = 0;
+	}
+	if (/\p{Bidi_class: R}/) {
+	    $_ = "\x{202d}$_\x{2069}";
 	}
 	$chreaten = $n - 1;
 	if ($charbased) {
@@ -172,7 +182,11 @@ sub process_char {
 	return;
     }
     
-    if ($code >= 0x20 && $code <= 0x7e) {
+    if ($code > 0x20 && $code <= 0x7e) {
+	put_normal(chr($code), 1);
+	return;
+    }
+    if ($code == 0x20 && $charbased <= 1) {
 	put_normal(chr($code), 1);
 	return;
     }
@@ -238,7 +252,7 @@ sub process_char {
 		last SKIP_HICODE if ($c >= 0xd800 && $c <= 0xdfff); # lone surrogate
 		last SKIP_HICODE if ($c >= 0x110000);               # over the range
 
-		my $s = chr $c;
+		my $s = pack("U", $c);
 		# check if it is Japanese characters (TODO: "printable")
 		my $ok;
 		if (0) {
@@ -249,18 +263,6 @@ sub process_char {
 		}
 		if ($ok) {
 		    my $outs = $s;
-		    if ($outs =~ /\p{Block: Combining_Diacritical_Marks}
-			      |\p{Block: Combining_Diacritical_Marks_For_Symbols}
-			      |\p{Block: Combining_Half_Marks}
-			      |\p{Block: Combining_Marks_For_Symbols}
-			      |\p{Block: Combining_Diacritical_Marks_For_Symbols}/x) {
-			$outs = " $outs";
-		    } elsif ($outs =~ /\p{Canonical_Combining_Class: 8}/) {
-			$outs = "\x{3000}$outs";
-		    }
-		    if ($outs =~ /\p{Bidi_class: R}/) {
-			$outs = "\x{202d}$outs\x{2069}";
-		    }
 		    put_normal($s, $n);
 		} else {
 		    if ($charbased) {
@@ -282,6 +284,8 @@ sub process_char {
 	    put_decorate('\r', undef, 1);
 	} elsif ($code < 0x20) {
 	    put_decorate("^" . chr(0x40 + $code), undef, 1);
+	} elsif ($code == 0x20) {
+	    put_decorate('sp', undef, 1);
 	} else {
 	    put_decorate(sprintf("%02x", $code), undef, 1);
 	}
@@ -320,4 +324,33 @@ sub get ($) {
 	return undef;
     }
     return ord($r);
+}
+
+sub wcwidth {
+    return 0 if $_[0] eq "";
+    return 1 if ord($_[0]) < 0x80;
+    my $_ = substr($_[0], 0, 1);
+    if ($widthmethod == 0) {
+	use Text::CharWidth;
+	my $r = Text::CharWidth::mbwidth($_);
+	return $r if ($r >= 0);
+    }
+    
+    if (/\p{Canonical_Combining_Class: 8}/) {
+	return '00';
+    }
+    if (/\p{Block: Combining_Diacritical_Marks}
+     |\p{Block: Combining_Diacritical_Marks_For_Symbols}
+     |\p{Block: Combining_Half_Marks}
+     |\p{Block: Combining_Marks_For_Symbols}
+     |\p{Block: Combining_Diacritical_Marks_For_Symbols}/x) {
+	return 0;
+    }
+    if (/\p{Ea: W}|\p{Ea: F}/) {
+	return 2;
+    }
+    if ($widthmethod >= 2 && /\p{Ea: A}/) {
+	return 2;
+    }
+    return 1;
 }
