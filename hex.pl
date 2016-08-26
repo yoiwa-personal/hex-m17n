@@ -1,30 +1,33 @@
 #!/usr/bin/perl
-#original copyright:
-#hex version 2.04 - hexadecimal dumping tool for Japanese
-#copyright (c) TAGA Nayuta <nayuta@is.s.u-tokyo.ac.jp>
-#  usage: hex [options ...] [filename]
-#  options:
-# * show non-letter-code by ...
-#    -c, --color                    : color (tty-output default)
-#    -b, --bold                     : bold
-#    -d, --dot                      : `.' (non-tty-output default)
-#    -t, --text                     : code + '@' (not useful)
-#    -u, --underline                : underline
-# * output coding system is ...
-#    -e, -oe, --oeuc                : *euc-japan* (default)
-#    -s, -os, --osjis               : *sjis*
-#    -j, -oj, --ojis                : *iso-2022-jp*
-# * assume input coding system to be ...
-#    -E, -ie, --ieuc                : *euc-japan* or *iso-2022-jp* (default)
-#    -S, -is, --isjis               : *sjis* or *iso-2022-jp*
-#    -U, -iu, --iunknown            : unknown
-# * other ...
-#    -cs1 <cs>, --colorstring1 <cs> : color-string1 is <cs> (ex. -cs1 '7;33')
-#    -cs2 <cs>, --colorstring2 <cs> : color-string2 is <cs>
-#    -siso, --enablesiso            : enable ^N/^O (SO/SI) KATAKANA (default)
-#    -dsiso, --disablesiso, +siso   : disable ^N/^O (SO/SI) KATAKANA
-#    -r, --restore                  : "hex hoe | hex -r > hoge" is "cp hoe hoge"
-#... and all options can be set to HEX_OPTIONS environment.
+# hexja.pl version 0.01 - hexadecimal dump tool for Japanese
+# (c) 2016 Yutaka OIWA.
+
+# it is a reimplementation of hex tool by TAGA Nayuta.
+#     hex version 2.04 - hexadecimal dumping tool for Japanese
+#     copyright (c) TAGA Nayuta <nayuta@is.s.u-tokyo.ac.jp>
+#       usage: hex [options ...] [filename]
+#       options:
+#      * show non-letter-code by ...
+#         -c, --color                    : color (tty-output default)
+#         -b, --bold                     : bold
+#         -d, --dot                      : `.' (non-tty-output default)
+#         -t, --text                     : code + '@' (not useful)
+#         -u, --underline                : underline
+#      * output coding system is ...
+#         -e, -oe, --oeuc                : *euc-japan* (default)
+#         -s, -os, --osjis               : *sjis*
+#         -j, -oj, --ojis                : *iso-2022-jp*
+#      * assume input coding system to be ...
+#         -E, -ie, --ieuc                : *euc-japan* or *iso-2022-jp* (default)
+#         -S, -is, --isjis               : *sjis* or *iso-2022-jp*
+#         -U, -iu, --iunknown            : unknown
+#      * other ...
+#         -cs1 <cs>, --colorstring1 <cs> : color-string1 is <cs> (ex. -cs1 '7;33')
+#         -cs2 <cs>, --colorstring2 <cs> : color-string2 is <cs>
+#         -siso, --enablesiso            : enable ^N/^O (SO/SI) KATAKANA (default)
+#         -dsiso, --disablesiso, +siso   : disable ^N/^O (SO/SI) KATAKANA
+#         -r, --restore                  : "hex hoe | hex -r > hoge" is "cp hoe hoge"
+#     ... and all options can be set to HEX_OPTIONS environment.
 
 use Encode;
 use utf8;
@@ -53,20 +56,83 @@ our $widthmethod = 0;
 use constant { BUFSIZE => 1024 };
 use Getopt::Long qw(:config bundling permute);
 
-our $incode = 0;
+our $incode = -1;
 our $decorate = (-t STDOUT);
 our $outenc = undef;
 
-GetOptions ("shift-jis|s" => sub { $incode = 1 },
+GetOptions ("ascii|a" => sub { $incode = 0 },
+	    "shift-jis|s" => sub { $incode = 1 },
 	    "euc-jp|e" => sub { $incode = 2 },
 	    "utf-8|u" => sub { $incode = 3 },
 	    "decorate|d!" => \$decorate,
-	    "char|c:i" => \$charbased,
+	    "char|c:1" => \$charbased,
 	    "charwidth=i" => \$widthmethod,
-	   ) or die;
+	    "help|h|?" => sub { &usage() },
+	   ) or usage();
 
-open IN, $ARGV[0] or die "open: $!";
+sub usage {
+    require File::Basename;
+    print "Error: $_[0]\n" if defined $_[0];
+
+    printf <<'EOS', File::Basename::basename($0);
+Usage: %s [options] [--] [input file]
+
+Options:
+  --ascii     -a : input is ASCII or binary
+                   (no special treatment for high codes)
+  --shift-jis -s : input is Shift-JIS
+  --euc-jp    -e : input is EUC-JP
+  --utf-8     -u : input is UTF-8
+                   (default : to guess from above four candidates)
+
+  --decorate  -d : use colorized output (default if output is tty)
+  --no-decorate  : use plain-text output
+
+  --char      -c : put printable characters in binary dump (a-la "od -c")
+  --char=2   -c2 :   show space as "sp"
+
+  --charwidth=n  : use internal character-width calculation
+                     "n" (1..2) specifies width of "ambiguous" characters
+                   (default: use locale settings (also when n = 0))
+  --help      -h : show this help
+EOS
+    exit 1;
+}
+
+if (defined $ARGV[1]) {
+    die "too many files specified.";
+}
+if (!defined $ARGV[0] || $ARGV[0] eq '-') {
+    *IN = *STDIN;
+} else {
+    open IN, $ARGV[0] or die "open: $!";
+}
+
 binmode(STDOUT, ":utf8");
+
+if ($incode < 0) {
+    read(IN, $buf, BUFSIZE * 8) // die "read error: $!";
+    if ($buf =~ /\A(?:[\x00-\x7f]
+		 |\x8e[\xa1-\xdf]
+		 |[\xa1-\xfe][\xa1-\xfe]
+		 )*.?\z/sx) {
+	$incode = 2; # EUC
+    } elsif ($buf =~ /\A(?:[\x00-\x7f]|
+			  [\xc2-\xdf][\x0x80-\xbf]|
+			  [\xe0-\xef][\x0x80-\xbf]{2}|
+			  [\xf0-\xf7][\x0x80-\xbf]{3}|
+			  [\xf8-\xfb][\x0x80-\xbf]{4}|
+			  [\xf8-\xfb][\x0x80-\xbf]{5}
+		      )*.{0,5}\z/sx) {
+	$incode = 3; # UTF-8
+    } elsif ($buf =~ /\A(?:[\x00-\x7f\xa1-\xdf]
+		      |[\x80-\x9f\xe0-\xef][\x40-\x7e\x80-\xfd]
+		      )*.?\z/sx) {
+	$incode = 1; # SJIS
+    } else {
+	$incode = 0; # unknown : assume ASCII
+    }
+}
 
 while (1) {
     my $o;
