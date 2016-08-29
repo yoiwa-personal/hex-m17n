@@ -1,5 +1,6 @@
-#!/usr/bin/perl
-# hexja.pl version 0.01 - hexadecimal dump tool for Japanese
+#!/usr/bin/perl -C0
+# -*- coding: utf-8 -*-
+# hexja.pl version 0.10 - hexadecimal dump tool for Japanese
 # (c) 2016 Yutaka OIWA.
 
 use Encode;
@@ -40,22 +41,36 @@ our $incode = 'detect';
 our $decorate = 2;
 our $outenc = undef;
 our $reset_2022_status = 1;
+our $use_control_pictures = 0;
 
 our %codings = 
-  ( 'binary'    => [ \&process_GL_ASCII,  \&process_GR_none,   \&process_C0_ASCII ],
-    'iso88591'  => [ \&process_GL_ASCII,  \&process_GR_8859_1, \&process_C0_ASCII ],
-    'shiftjis'  => [ \&process_GL_ASCII,  \&process_GR_SJIS,   \&process_C0_ASCII ],
-    'eucjp'     => [ \&process_GL_ASCII,  \&process_GR_EucJP,  \&process_C0_ASCII ],
-    'utf8'      => [ \&process_GL_ASCII,  \&process_GR_UTF8,   \&process_C0_ASCII ],
-    'iso2022'   => [ \&process_GLR_2022, \&process_GLR_2022,   \&process_C0_2022,  \&process_init_junet ],
-    'detect'    => [],
+  ( 'binary'    => [ "Binary input (ASCII only)",
+		     \&process_GL_ASCII,  \&process_GR_none,   \&process_C0_ASCII ],
+    'iso88591'  => [ "ISO-8859-1 (Latin 1)",
+		     \&process_GL_ASCII,  \&process_GR_8859_1, \&process_C0_ASCII ],
+    'shiftjis'  => [ "Shift_JIS (Japanese)",
+		     \&process_GL_ASCII,  \&process_GR_SJIS,   \&process_C0_ASCII ],
+    'eucjp'     => [ "EUC-JP (Japanese)",
+		     \&process_GL_ASCII,  \&process_GR_EucJP,  \&process_C0_ASCII ],
+    'utf8'      => [ "UTF-8 encoding of ISO-10646-1",
+		     \&process_GL_ASCII,  \&process_GR_UTF8,   \&process_C0_ASCII ],
+    'iso2022jp'   => [ "ISO-2022-JP (other ISO-2022-KR, CN is also accepted)",
+		     \&process_GLR_2022, \&process_GLR_2022,   \&process_C0_2022, 
+		     \&process_init_2022 , qw(B I) ],
+    'iso2022'     => [ "ISO-2022 (neutral: GR default to ISO-8859-1)",
+		     \&process_GLR_2022, \&process_GLR_2022,   \&process_C0_2022, 
+		     \&process_init_2022 , qw(B ,A) ],
+    'japaneseiso8' => [ "EUC-JP with ISO-2022 handling",
+			\&process_GLR_2022, \&process_GLR_2022,   \&process_C0_2022, 
+			\&process_init_2022 , qw(B $B I $D) ],
+    'detect'    => [ "Automatic detection" ],
   );
 
 our %coding_aliases = 
   ( 'ascii' => 'binary',
-    'junet' => 'iso2022',
-    'jis'   => 'iso2022',
-    'iso2022jp' => 'iso2022',
+    'junet' => 'iso2022jp',
+    'jis'   => 'iso2022jp',
+    'ujis'  => 'eucjp',
     'guess' => 'detect' );
 
 GetOptions ("ascii|a"     => sub { set_input_coding('binary') },
@@ -64,47 +79,68 @@ GetOptions ("ascii|a"     => sub { set_input_coding('binary') },
 	    "utf-8|u"     => sub { set_input_coding('utf8') },
 	    "junet|jis|iso-2022-jp|j" => sub { set_input_coding('jis') },
 	    "input-coding|i=s" => \&set_input_coding,
+	    "list-coding" => \&list_input_coding,
 	    "decorate|d!" => \$decorate,
 	    "plaintext|p" => sub { $decorate = 0 },
 	    "char|c:1"    => \$charbased,
 	    "text|t"      => \$textbased,
 	    "charwidth=i" => \$widthmethod,
-	    "reset-status!" => \$reset_2022_status,
+	    "reset-status!" => \$reset_2022_status, # use with --no-reset-status
 	    "help|h|?"    => sub { &usage() },
+	    "use-control-pictures:1" => \$use_control_pictures,
 	   ) or usage();
 
 usage("-c and -t cannot be used together") if $charbased && $textbased;
 
 sub usage {
-    require File::Basename;
+    require FindBin;
     print "Error: $_[0]\n" if defined $_[0];
 
-    printf <<'EOS', File::Basename::basename($0);
+    printf <<'EOS', $FindBin::Script;
 Usage: %s [options] [--] [input file]
 
 Options:
-  --ascii       -a : input is ASCII or binary
-                     (no special treatment for high codes)
-  --shift-jis   -s : input is Shift-JIS
-  --euc-jp      -e : input is EUC-JP
-  --utf-8       -u : input is UTF-8
-  --iso-2022-jp -j : input is ISO-2022-JP (also --jis, --junet)
-                   (default : to guess from above four candidates)
+  --ascii       -a  : input is ASCII or binary
+                      (no special treatment for high codes)
+  --shift-jis   -s  : input is Shift-JIS
+  --euc-jp      -e  : input is EUC-JP
+  --utf-8       -u  : input is UTF-8
+  --iso-2022-jp -j  : input is ISO-2022-JP (also --jis, --junet)
+                      (default : to guess from above four candidates)
+
   --input-coding=<coding> -i : set input coding
+  --list-coding              : show the list of accepted input codings
 
-  --decorate  -d : use colorized output (default if output is tty)
-  --no-decorate  : use plain-text output
+  --decorate    -d  : use colorized output (default if output is tty)
+  --no-decorate -p  : use plain-text output
 
-  --char      -c : put printable characters in binary dump (a-la "od -c")
-  --char=2   -c2 :   show space as "sp"
-  --text      -t : print as plain text, quoting non-printable as hex dump
+  --char        -c  : put printable characters in binary dump (like "od -c")
+  --char=2      -c2 :   show space as "sp"
+  --text        -t  : print as plain text, quoting non-printable as hex dump
 
-  --charwidth=n  : use internal character-width calculation
-                     "n" (1..2) specifies width of "ambiguous" characters
-                   (default: use locale settings (also when n = 0))
-  --help      -h : show this help
+  --charwidth=n     : use internal character-width calculation
+                      "n" (1..2) specifies width of "ambiguous" characters
+                      (default: use locale settings (also when n = 0))
+  --help        -h  : show this help
 EOS
     exit 1;
+}
+
+sub list_input_coding {
+    my %r = ();
+    for (sort keys %coding_aliases) {
+	$r{$coding_aliases{$_}} //= [];
+	push $r{$coding_aliases{$_}}, $_;
+    }
+    
+    print "List of supported input codings:\n";
+
+    for (sort(keys(%codings))) {
+	printf("  %-13s: %s\n", $_, $codings{$_}->[0]);
+	printf("        %s\n", "(aliases: " . join(", ", @{$r{$_}}) . ")") if $r{$_};
+    }
+    print "(cases, spaces and hyphens are ignored: e.g. ISO-8859-1 is accepted)\n";
+    exit 0;
 }
 
 if (defined $ARGV[1]) {
@@ -130,9 +166,9 @@ if ($incode eq 'detect') {
     set_input_coding($inc);
 }
 
-my ($process_GL, $process_GR, $process_C0, $process_init) = @{$codings{$incode}};
+my (undef, $process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = @{$codings{$incode}};
 
-&$process_init() if defined $process_init;
+&$process_init(@process_init_args) if defined $process_init;
 
 while (1) {
     my $o;
@@ -148,7 +184,7 @@ while (1) {
 	process_char($addr + $o, $code);
     }
     last if $o == 0;
-    unless ($charbased | $textbased) {
+    unless ($charbased || $textbased) {
 	$binbuf = substr($binbuf . (" "x48), 0, 50) if length $binbuf < 50;
     }
     put_normal("", 0) unless $textbased;
@@ -185,7 +221,9 @@ sub detect_coding {
     # matched with "." there.
 
     given ($_[0]) {
-	when (m#\e\$?[\$(-/][A-z\@][\x0\x0f\x1b\x20-\x7e\x8e\x8f\xa0-\xff]+(?:\e\([B\@]|\n)#sx) {
+	when (m#\e\$?[\$(-/][A-~\@]
+		[\x0e\x0f\x1b\x20-\x7e\x8e\x8f\xa0-\xff]+
+		(?:\e\([ABGHJ-LRTY`afghiwx\@]|\n)#sx) {
 	    'ISO-2022'
 	}
 	when (/\A(?:[\x00-\x7f])*\z/sx) {
@@ -317,7 +355,7 @@ sub process_char {
     my ($ofs, $code) = (@_);
 
     if ($chreaten) {
-#	printf "ofs %x: eaten %d, forward %d\n", $ofs, $chreaten, $chrforward;
+	#printf "ofs %x: eaten %d, forward %d\n", $ofs, $chreaten, $chrforward;
 	$chreaten--;
 	if ($chrforward) {
 	    $chrforward--;
@@ -336,24 +374,30 @@ sub process_char {
     }
 }
 
+my @C0_abbrs;
+BEGIN {
+    @C0_abbrs = 
+      ('\0^A^B^C^D^E^F\a\b\t\n\v\f\r^N^O^P^Q^R^S^T^U^U^V^W^X^Y^Z^[^\^]^^sp^?',
+       '                BSHTLFVTFFCRSOSI                  EM    FSGSRSUSSP  ',
+       'NUSHSXEXETEQAKBLBSHTLFVTFFCRSOSIDED1D2D3D4NKSNEBCNEMSBECFSGSRSUSSPDL') ; # non-standard
+}
+
 sub process_C0_ASCII {
     my ($ofs, $code) = (@_);
 
     if ($charbased) {
-	if ($code == 0x0a) {
-	    put_decorate('\n', undef, 1);
-	} elsif ($code == 0x09) {
-	    put_decorate('\t', undef, 1);
-	} elsif ($code == 0x0d) {
-	    put_decorate('\r', undef, 1);
-	} elsif ($code < 0x20) {
-	    put_decorate("^" . chr(0x40 + $code), undef, 1);
-	} elsif ($code == 0x20) {
-	    if ($charbased > 1) {
-		put_decorate('sp', undef, 1);
+	if ($code < 0x20 || 
+	    ($code == 0x20 && $charbased > 1) ||
+	    $code == 0x7f) {
+	    my $c = $code == 0x7f ? 33 : $code;
+	    my $s = substr($C0_abbrs[$use_control_pictures], $c * 2, 2);
+	    if ($s eq '  ') {
+		put_decorate(chr(0x2400 + $code), undef, 1);
 	    } else {
-		put_normal(" ", 1);
+		put_decorate($s, undef, 1);
 	    }
+	} elsif ($code == 0x20) {
+	    put_normal(" ", 1);
 	} else {
 	    put_decorate(sprintf("%02x", $code), undef, 1);
 	}
@@ -363,9 +407,13 @@ sub process_C0_ASCII {
 	} elsif ($textbased && $code == 0x0a) {
 	    put_normal("\n", 1);
 	} elsif ($code < 0x20) {
-	    put_decorate(chr(0x40 + $code), ".");
+	    if ($use_control_pictures) {
+		put_decorate(chr(0x2400 + $code), chr(0x2400 + $code));
+	    } else {
+		put_decorate(chr(0x40 + $code), ".");
+	    }
 	} elsif ($code == 0x7f) {
-	    put_decorate("~", ".");
+	    put_decorate("?", ".");
 	} else {
 	    put_decorate(".", ".");
 	}
@@ -384,38 +432,76 @@ sub process_GL_ASCII {
 
 sub process_GR_none {
     my ($ofs, $code) = (@_);
-    put_decorate(".", ".");
+
+    if ($charbased) {
+	put_decorate(sprintf("%02x", $code), undef, 1);
+    } else {
+	put_decorate(".", ".");
+    }
 }
 
 ### input processing: wide char supports
 
+{
+    use Text::CharWidth;
+
+    my $chrattr_cache = "";
+    # 0x80 -> checked, 0x40 -> char printable class
+    # 0x20 -> mbwidth available
+    # 0x03 -> char width (0-2)
+
+    sub check_char_attr {
+	my $char = substr($_[0], 0, 1);
+	my $code = ord($char);
+	my $r;
+	if ($code < 0x10000) {
+	    my $r = vec($chrattr_cache, $code, 8);
+	    return $r if $r;
+	}
+	$r = 0x80; # checked
+	$r |= 0x40 if $char =~ /^\p{Print}$/;
+	
+	my $skip_classcheck = 0;
+	
+	if ($widthmethod == 0) {
+	    my $v = Text::CharWidth::mbwidth($char);
+	    if ($v >= 0 && $v < 4) {
+		$r |= (0x20 | $v);
+		$skip_classcheck = 1;
+	    }
+	} 
+	unless ($skip_classcheck) {
+	    $r |= 0x20 if ($widthmethod != 0) && ($r & 0x40 != 0);
+	    
+	    if (/\p{Block: Combining_Diacritical_Marks}
+	     |\p{Block: Combining_Diacritical_Marks_For_Symbols}
+	     |\p{Block: Combining_Half_Marks}
+	     |\p{Block: Combining_Marks_For_Symbols}
+	     |\p{Block: Combining_Diacritical_Marks_For_Symbols}/x) {
+	    } elsif (/\p{Ea: W}|\p{Ea: F}/) {
+		$r |= 2;
+	    } elsif ($widthmethod >= 2 && /\p{Ea: A}/) {
+		$r |= 2;
+	    } else {
+		$r |= 1;
+	    }
+	}
+	if ($code < 0x10000) {
+	    vec($chrattr_cache, $code, 8) = $r;
+	}
+	#printf "DEBUG: checked code U+%x -> %b\n", $code, $r;
+	return $r;
+    }
+}
+
 sub wcwidth {
     return 0 if $_[0] eq "";
     return 1 if ord($_[0]) < 0x80;
-    my $_ = substr($_[0], 0, 1);
-    if ($widthmethod == 0) {
-	use Text::CharWidth;
-	my $r = Text::CharWidth::mbwidth($_);
-	return $r if ($r >= 0);
-    }
+    return check_char_attr($_[0]) & 3;
+}
 
-    if (/\p{Canonical_Combining_Class: 8}/) {
-	return '00';
-    }
-    if (/\p{Block: Combining_Diacritical_Marks}
-     |\p{Block: Combining_Diacritical_Marks_For_Symbols}
-     |\p{Block: Combining_Half_Marks}
-     |\p{Block: Combining_Marks_For_Symbols}
-     |\p{Block: Combining_Diacritical_Marks_For_Symbols}/x) {
-	return 0;
-    }
-    if (/\p{Ea: W}|\p{Ea: F}/) {
-	return 2;
-    }
-    if ($widthmethod >= 2 && /\p{Ea: A}/) {
-	return 2;
-    }
-    return 1;
+sub is_printable_to_terminal {
+    return (check_char_attr($_[0]) & 0x60) == 0x60;
 }
 
 sub put_maybe_fullwidth {
@@ -507,11 +593,12 @@ sub process_GR_UTF8 {
 	    last SKIP_HICODE if ($c >= 0x110000);               # over the range
 	    
 	    my $s = pack("U", $c);
-	    my $ok = $s =~ /^\p{Print}$/;
-	    if ($ok) {
+	    if (is_printable_to_terminal($s)) {
+#		printf "debug: char %x is printable\n", $c;
 		my $outs = $s;
 		put_normal($s, $n);
 	    } else {
+#		printf "debug: char %x is NOT printable\n", $c;
 		if ($charbased) {
 		    put_decorate(sprintf("U+%X", $c), undef, $n);
 		} else {
@@ -526,14 +613,56 @@ sub process_GR_UTF8 {
 
 ### input processing: ISO-2022 handling
 
-my @GLR;
+my @GLR_init;
 my @G_init;
+my @GLR;
 my @G;
 my $SS;
+my ($allow_LS, $allow_SS, $allow_designate);
 
-sub process_init_junet {
-    @GLR = (0, 1);
-    @G_init = ('B', 'I', '', '');
+sub process_init_2022 {
+    my @p = @_;
+
+    $allow_SS = $allow_LS = $allow_designate = 1;
+
+    while ($p[0] =~ /^:/) {
+	given(shift @p) {
+	    when (':noshift') {
+		$allow_SS = $allow_LS = 0;
+	    }
+	    when (':noSS') {
+		$allow_SS = 0;
+	    }
+	    when (':noLS') {
+		$allow_LS = 0;
+	    }
+	    when (':nodesignate') {
+		$allow_designate = 0;
+	    }
+	    when (':fixed') {
+		$allow_SS = $allow_LS = $allow_designate = 0;
+	    }
+	    when (':noreset') {
+		$reset_2022_status = 0; # regardless of cmdline options
+	    }
+	    default {
+		die "internal error: unknown flag for ISO-2022 initialization: $_";
+	    }
+	}
+    }
+    @GLR_init = (0, 1);
+    if ($p[0] =~ /^\d+$/) {
+	$GLR_init[0] = shift @p;
+	if ($p[0] =~ /^\d+$/) {
+	    $GLR_init[1] = shift @p;
+	}
+    }
+    die "internal error: too many codeset for ISO-2022 initialization" if (@p > 4);
+    
+    @G_init = @p;
+    $G_init[$_] //= (('B', 'I', '', '')[$_]) for (0 .. 3);
+
+    @GLR = @GLR_init;
     @G = @G_init;
     $SS = 0;
 }
@@ -545,6 +674,7 @@ BEGIN {
     %encode_cache = ( '$A' => 'GB2312',
 		      '$C' => 'EUC-KR',
 #		      '$G' => 'EUC-TW', # only Big5 is included in pure Perl distribution
+		      ',A' => 'ISO-8859-1', # not used: directly implemented
 		      ',B' => 'ISO-8859-2',
 		      ',C' => 'ISO-8859-3',
 		      ',D' => 'ISO-8859-4',
@@ -603,8 +733,8 @@ sub process_GLR_2022 {
 
     my $is_GR = ($code >= 0x80 ? 1 : 0);
 
-    if ($code == 0x8e || $code == 0x8f) {
-	# SS2
+    if (($code == 0x8e || $code == 0x8f) && $allow_SS) {
+	# SS2/3
 	$SS = $code - 0x8c;
 	put_fill (1);
 	return;
@@ -654,7 +784,6 @@ sub process_GLR_2022 {
 	    my $next = get($ofs + 1) & 0x7f;
 	    if ($next >= 0x21 && $next <= 0x7e) {
 		put_maybe_fullwidth($enc_EJ->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
-		$chreaten = $chrforward = 1;
 	    } else {
 		put_decorate(".");
 	    }
@@ -663,7 +792,6 @@ sub process_GLR_2022 {
 	    my $next = get($ofs + 1) & 0x7f;
 	    if ($next >= 0x21 && $next <= 0x7e) {
 		put_maybe_fullwidth($enc_EJ->decode(chr(0x8f) . chr(0x80 | $c) . chr(0x80 | $next)), 2);
-		$chreaten = $chrforward = 1;
 		return;
 	    } else {
 		put_decorate(".");
@@ -699,7 +827,7 @@ sub process_GLR_2022 {
 		put_decorate("x");
 	    }
 	}
-	when (/^\$[AC]$/) { # G dropped
+	when (/^\$[AC]$/) { # G (EUC-TW) dropped as optional in Perl
 	    my $next = get($ofs + 1) & 0x7f;
 	    if ($next >= 0x21 && $next <= 0x7e) {
 		my $enc = get_encode_cache($G);
@@ -741,12 +869,13 @@ sub process_C0_2022 {
 		# workaround for half-binary data:
 		# reset shift statuses at each line-beginning
 		@G = @G_init;
-		@GLR = (0, 1);
+		@GLR = @GLR_init;
 	    }
 	    process_C0_ASCII(@_);
 	}
 	when ([0x0e, 0x0f]) {
 	    # LS0 (SO), LS1 (SI)
+	    continue unless $allow_LS;
 	    $GLR[0] = $code ^ 0x0f;
 	    put_fill(1);
 	}
@@ -757,6 +886,7 @@ sub process_C0_2022 {
 	    given ($targetC) {
 		when ([0x6e, 0x6f]) {
 		    # LS2, LS3
+		    break if !$allow_LS;
 		    $GLR[0] = $targetC & 3;
 		    put_fill(1);
 		    $chreaten = 1; $chrforward = 0;
@@ -764,6 +894,7 @@ sub process_C0_2022 {
 		}
 		when ([0x7e, 0x7d, 0x7c]) {
 		    # LS[123]R
+		    break if !$allow_LS;
 		    $GLR[1] = 0x7f - $targetC;
 		    put_fill(1);
 		    $chreaten = 1; $chrforward = 0;
@@ -771,6 +902,7 @@ sub process_C0_2022 {
 		}
 		when ([0x4e, 0x4f]) {
 		    # SS2, SS3
+		    break if !$allow_SS;
 		    $SS = $targetC & 3;
 		    put_fill(1);
 		    $chreaten = 1; $chrforward = 0;
@@ -781,8 +913,8 @@ sub process_C0_2022 {
 	    my $target = -1;
 	    my $assign = "";
 
-	    if ($targetC >= 0x28 && $targetC <= 0x2f) {
-	    
+	    if ($targetC >= 0x28 && $targetC <= 0x2f && $allow_designate) {
+			    
 		$target = $targetC & 3;
 		my $is_96char = ($targetC & 4) ? "," : "";
 
@@ -797,7 +929,7 @@ sub process_C0_2022 {
 		    $assign = $is_96char . chr($setC);
 		    $n = 3;
 		}
-	    } elsif ($targetC == 0x24) {
+	    } elsif ($targetC == 0x24 && $allow_designate) {
 		my $targetC = get($ofs + 2);
 		if ($targetC >= 0x40 && $targetC <= 0x42) {
 		    $target = 0;
@@ -813,7 +945,7 @@ sub process_C0_2022 {
 		}
 	    }
 	    if ($n) {
-		# printf "ISO-2022 SEQUENCE %d: ofs %x, target G%d, assign %s\n", $n, $ofs, $target, $assign;
+		#printf "ISO-2022 SEQUENCE %d: ofs %x, target G%d, assign %s\n", $n, $ofs, $target, $assign;
 		$G[$target] = $assign;
 		put_fill(1);
 		$chreaten = $n - 1;
