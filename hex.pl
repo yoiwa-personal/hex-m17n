@@ -42,6 +42,7 @@ our $decorate = 2;
 our $outenc = undef;
 our $reset_2022_status = 1;
 our $use_control_pictures = 0;
+our $iso2022init = undef;
 
 our %codings = 
   ( 'binary'    => [ "Binary input (ASCII only)",
@@ -54,15 +55,12 @@ our %codings =
 		     \&process_GL_ASCII,  \&process_GR_EucJP,  \&process_C0_ASCII ],
     'utf8'      => [ "UTF-8 encoding of ISO-10646-1",
 		     \&process_GL_ASCII,  \&process_GR_UTF8,   \&process_C0_ASCII ],
-    'iso2022jp'   => [ "ISO-2022-JP (other ISO-2022-KR, CN is also accepted)",
-		     \&process_GLR_2022, \&process_GLR_2022,   \&process_C0_2022, 
-		     \&process_init_2022 , qw(B I) ],
+    'iso2022jp' => [ "ISO-2022-JP (other ISO-2022-KR, CN is also accepted)",
+		     qw(B I) ],
     'iso2022'     => [ "ISO-2022 (neutral: GR default to ISO-8859-1)",
-		     \&process_GLR_2022, \&process_GLR_2022,   \&process_C0_2022, 
-		     \&process_init_2022 , qw(B ,A) ],
-    'japaneseiso8' => [ "EUC-JP with ISO-2022 handling",
-			\&process_GLR_2022, \&process_GLR_2022,   \&process_C0_2022, 
-			\&process_init_2022 , qw(B $B I $D) ],
+		     qw(B ,A) ],
+    'japaneseiso8' => [ "EUC-JP with ISO-2022 handling", qw(B $B I $D) ],
+    'iso88592' => [ "ISO-8859-2 (Latin 2)", qw(:fixed B ,B) ],
     'detect'    => [ "Automatic detection" ],
   );
 
@@ -71,6 +69,7 @@ our %coding_aliases =
     'junet' => 'iso2022jp',
     'jis'   => 'iso2022jp',
     'ujis'  => 'eucjp',
+    'sjis'  => 'shiftjis',
     'guess' => 'detect' );
 
 GetOptions ("ascii|a"     => sub { set_input_coding('binary') },
@@ -157,16 +156,33 @@ if ($decorate == 2 && $is_tty) {
 }
 binmode(STDOUT, ":utf8");
 
-if ($incode eq 'detect') {
-    # input encoding guess (detection)
-    read(IN, $buf, BUFSIZE * 8) // die "read error: $!"; # 0 is OK, undef is error
+my ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
 
-    my $inc = detect_coding($buf);
-    printf "# Detected coding: %s\n", $inc if (($buf ne '') && (!$textbased));
-    set_input_coding($inc);
+{
+    my @a;
+
+    if (defined $iso2022init) {
+	@a = split(/ +/, $iso2022init);
+    } else {
+	if ($incode eq 'detect') {
+	    # input encoding guess (detection)
+	    read(IN, $buf, BUFSIZE * 8) // die "read error: $!"; # 0 is OK, undef is error
+
+	    my $inc = detect_coding($buf);
+	    printf "# Detected coding: %s\n", $inc if (($buf ne '') && (!$textbased));
+	    set_input_coding($inc);
+	}
+	@a = @{$codings{$incode}};
+	shift @a;
+    }
+
+    if (ref $a[0]) {
+	($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = @a;
+    } else {
+	($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = 
+	  (\&process_GLR_2022, \&process_GLR_2022, \&process_C0_2022, \&process_init_2022, @a);
+    }
 }
-
-my (undef, $process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = @{$codings{$incode}};
 
 &$process_init(@process_init_args) if defined $process_init;
 
@@ -205,10 +221,13 @@ exit 0;
 sub set_input_coding {
     my $coding = $_[-1];
 
+    if ($coding =~ /\A([iI][sS][oO]-?2022)?\((.+)\)\z/) {
+	$incode = 'iso2022';
+	$iso2022init = $2;
+	return;
+    }
     my $c = lc $coding;
     $c =~ s/[_-]//g;
-    require Data::Dumper;
-    Data::Dumper::Dumper(%coding_aliases);
     $c = $coding_aliases{$c} if exists $coding_aliases{$c};
     usage("unknown coding: $coding ($c)") unless exists $codings{$c};
     $incode = $c;
@@ -440,6 +459,15 @@ sub process_GR_none {
     }
 }
 
+sub process_GR_8859_1 {
+    my ($ofs, $code) = (@_);
+    if ($code >= 0xa0 && $code <= 0xff) {
+	put_normal(pack("U", $code), 1);
+	return;
+    }
+    process_GR_none(@_);
+}
+
 ### input processing: wide char supports
 
 {
@@ -558,15 +586,6 @@ sub process_GR_EucJP {
 
 ### input processing: utf-8 (with wide-char support)
 
-sub process_GR_8859_1 {
-    my ($ofs, $code) = (@_);
-    if ($code >= 0xa1 && $code <= 0xfe) {
-	put_normal(pack("U", $code), 1);
-	return;
-    }
-    process_GR_none(@_);
-}
-
 sub process_GR_UTF8 {
     my ($ofs, $code) = (@_);
 
@@ -646,21 +665,26 @@ sub process_init_2022 {
 		$reset_2022_status = 0; # regardless of cmdline options
 	    }
 	    default {
-		die "internal error: unknown flag for ISO-2022 initialization: $_";
+		die "Error: unknown flag for ISO-2022 initialization: $_\n";
 	    }
 	}
     }
     @GLR_init = (0, 1);
-    if ($p[0] =~ /^\d+$/) {
+    if ($p[0] =~ /^[0123]$/) {
 	$GLR_init[0] = shift @p;
-	if ($p[0] =~ /^\d+$/) {
+	if ($p[0] =~ /^[0123]$/) {
 	    $GLR_init[1] = shift @p;
 	}
     }
-    die "internal error: too many codeset for ISO-2022 initialization" if (@p > 4);
+    die "Error: too many codeset for ISO-2022 initialization\n" if (@p > 4);
     
-    @G_init = @p;
-    $G_init[$_] //= (('B', 'I', '', '')[$_]) for (0 .. 3);
+    @G_init = ('B', '', '', '');
+    for my $_ (0 .. 3) {
+	my $g = $p[$_];
+	last unless defined $g;
+	die "Error: bad ISO2022 specifier for G$_: $g\n" unless $g =~ /^[\,\$]?[\@-\~]$/s;
+	$G_init[$_] = $g;
+    }
 
     @GLR = @GLR_init;
     @G = @G_init;
@@ -676,7 +700,7 @@ BEGIN {
 #		      '$G' => 'EUC-TW', # only Big5 is included in pure Perl distribution
 		      ',A' => 'ISO-8859-1', # not used: directly implemented
 		      ',B' => 'ISO-8859-2',
-		      ',C' => 'ISO-8859-3',
+		      ',F' => 'ISO-8859-3',
 		      ',D' => 'ISO-8859-4',
 		      ',F' => 'ISO-8859-7',
 		      ',G' => 'ISO-8859-6',
@@ -802,7 +826,7 @@ sub process_GLR_2022 {
 	    my $table = $I646table{$_};
 	    if (defined $table) {
 		my $key = $I646table{B}; # US ASCII
-		my $i = index($key, chr($code));
+		my $i = index($key, chr($c));
 		if ($i != -1) {
 		    put_normal(substr($table, $i, 1), 1);
 		} else {
