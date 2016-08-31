@@ -423,8 +423,8 @@ sub process_C0_ASCII {
     } else {
 	if ($code == 0x20) {
 	    put_normal(" ", 1);
-	} elsif ($textbased && $code == 0x0a) {
-	    put_normal("\n", 1);
+	} elsif ($textbased && ($code == 0x0a || $code == 0x09)) {
+	    put_normal(chr($code), 1);
 	} elsif ($code < 0x20) {
 	    if ($use_control_pictures) {
 		put_decorate(chr(0x2400 + $code), chr(0x2400 + $code));
@@ -534,7 +534,7 @@ sub is_printable_to_terminal {
 
 sub put_maybe_fullwidth {
     my ($s, $n) = @_;
-    if (length $s > 1 || substr($s, 1) eq "\x{fffd}") {
+    if (length $s > 1 || substr($s, 0, 1) eq "\x{fffd}") {
 	put_decorate("〓" . (" " x ($n - 2)), "." x $n, $n);
     } else {
 	put_normal($s, $n);
@@ -934,47 +934,49 @@ sub process_C0_2022 {
 		}
 	    }
 
-	    my $target = -1;
-	    my $assign = "";
+	    if ($allow_designate) {
+		my $target = -1;
+		my $assign = "";
 
-	    if ($targetC >= 0x28 && $targetC <= 0x2f && $allow_designate) {
+		if ($targetC >= 0x28 && $targetC <= 0x2f) {
 			    
-		$target = $targetC & 3;
-		my $is_96char = ($targetC & 4) ? "," : "";
-
-		my $setC = get($ofs + 2);
-		if ($setC == 0x21) {
-		    $setC = get($ofs + 3);
-		    if ($setC >= 0x40 && $setC <= 0x7e) {
-			$assign = $is_96char . '!' . chr($setC);
-			$n = 4;
+		    $target = $targetC & 3;
+		    my $is_96char = ($targetC & 4) ? "," : "";
+		    
+		    my $setC = get($ofs + 2);
+		    if ($setC == 0x21) {
+			$setC = get($ofs + 3);
+			if ($setC >= 0x40 && $setC <= 0x7e) {
+			    $assign = $is_96char . '!' . chr($setC);
+			    $n = 4;
+			}
+		    } elsif ($setC >= 0x40 && $setC <= 0x7e) {
+			$assign = $is_96char . chr($setC);
+			$n = 3;
 		    }
-		} elsif ($setC >= 0x40 && $setC <= 0x7e) {
-		    $assign = $is_96char . chr($setC);
+		} elsif ($targetC == 0x24 && $allow_designate) {
+		    my $targetC = get($ofs + 2);
+		    if ($targetC >= 0x40 && $targetC <= 0x42) {
+			$target = 0;
+			$assign = '$' . chr($targetC);
 		    $n = 3;
-		}
-	    } elsif ($targetC == 0x24 && $allow_designate) {
-		my $targetC = get($ofs + 2);
-		if ($targetC >= 0x40 && $targetC <= 0x42) {
-		    $target = 0;
-		    $assign = '$' . chr($targetC);
-		    $n = 3;
-		} elsif ($targetC >= 0x28 && $targetC <= 0x2b) {
-		    my $setC = get($ofs + 3);
-		    if ($setC >= 0x40 && $setC <= 0x7e) {
-			$target = $targetC & 3;
-			$assign = '$' . chr($setC);
-			$n = 4;
+		    } elsif ($targetC >= 0x28 && $targetC <= 0x2b) {
+			my $setC = get($ofs + 3);
+			if ($setC >= 0x40 && $setC <= 0x7e) {
+			    $target = $targetC & 3;
+			    $assign = '$' . chr($setC);
+			    $n = 4;
+			}
 		    }
 		}
-	    }
-	    if ($n) {
-		#printf "ISO-2022 SEQUENCE %d: ofs %x, target G%d, assign %s\n", $n, $ofs, $target, $assign;
-		$G[$target] = $assign;
-		put_fill(1);
-		$chreaten = $n - 1;
-		$chrforward = 0;
-		return;
+		if ($n) {
+		    #printf "ISO-2022 SEQUENCE %d: ofs %x, target G%d, assign %s\n", $n, $ofs, $target, $assign;
+		    $G[$target] = $assign;
+		    put_fill(1);
+		    $chreaten = $n - 1;
+		    $chrforward = 0;
+		    return;
+		}
 	    }
 	    continue
 	}
