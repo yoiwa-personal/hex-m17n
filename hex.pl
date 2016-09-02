@@ -8,7 +8,8 @@ use utf8;
 use strict;
 
 use v5.10.0;
-use feature "switch";
+use feature qw( switch unicode_strings );
+no if ($] >= 5.018), 'warnings', qw( experimental::smartmatch );
 
 our $enc_SJ = find_encoding("Shift_JIS") // die;
 our $enc_932 = find_encoding("CP932") // die;
@@ -47,20 +48,41 @@ our $iso2022init = undef;
 our %codings = 
   ( 'binary'    => [ "Binary input (ASCII only)",
 		     \&process_GL_ASCII,  \&process_GR_none,   \&process_C0_ASCII ],
-    'iso88591'  => [ "ISO-8859-1 (Latin 1)",
+    'iso88591'  => [ "ISO 8859-1 (Latin-1)", # (2022: :fixed B ,A) (mb: latin1 80-ff)
 		     \&process_GL_ASCII,  \&process_GR_8859_1, \&process_C0_ASCII ],
     'shiftjis'  => [ "Shift_JIS (Japanese)",
 		     \&process_GL_ASCII,  \&process_GR_SJIS,   \&process_C0_ASCII ],
-    'eucjp'     => [ "EUC-JP (Japanese)",
+    'eucjp'     => [ "EUC-JP (Japanese)",                  # (2022: :fixed B $B I $D)
 		     \&process_GL_ASCII,  \&process_GR_EucJP,  \&process_C0_ASCII ],
-    'utf8'      => [ "UTF-8 encoding of ISO-10646-1",
+    'utf8'      => [ "UTF-8 encoding of ISO 10646-1",
 		     \&process_GL_ASCII,  \&process_GR_UTF8,   \&process_C0_ASCII ],
+
+    'iso2022'     => [ "ISO 2022 (neutral: GR default to ISO 8859-1)",
+		     qw(2022: B ,A) ],
     'iso2022jp' => [ "ISO-2022-JP (other ISO-2022-KR, CN is also accepted)",
-		     qw(B I) ],
-    'iso2022'     => [ "ISO-2022 (neutral: GR default to ISO-8859-1)",
-		     qw(B ,A) ],
-    'japaneseiso8' => [ "EUC-JP with ISO-2022 handling", qw(B $B I $D) ],
-    'iso88592' => [ "ISO-8859-2 (Latin 2)", qw(:fixed B ,B) ],
+		     qw(2022: B I) ],
+    'japaneseiso8' => [ "EUC-JP with ISO-2022 handling", qw(2022: B $B I $D) ],
+    'iso88592' => [ "ISO 8859-2 (Latin-2)", qw(2022: :fixed B ,B) ],
+    'iso88593' => [ "ISO 8859-3 (Latin-3)", qw(2022: :fixed B ,C) ],
+    'iso88594' => [ "ISO 8859-4 (Latin-4)", qw(2022: :fixed B ,D) ],
+    'iso88595' => [ "ISO 8859-5", qw(2022: :fixed B ,L) ],
+#    'iso88596' => [ "ISO 8859-6", qw(2022: :fixed B ,G) ],
+    'iso88597' => [ "ISO 8859-7", qw(2022: :fixed B ,F) ],
+    'iso88598' => [ "ISO 8859-7", qw(2022: :fixed B ,H) ],
+    'iso88599' => [ "ISO 8859-9 (Latin-5)", qw(2022: :fixed B ,M) ],
+    'iso885910' => [ "ISO 8859-10 (Latin-6)", qw(2022: :fixed B ,V) ],
+    'iso885913' => [ "ISO 8859-13 (Latin-7)", qw(2022: :fixed B ,Y) ],
+    'iso885914' => [ "ISO 8859-14 (Latin-8)", qw(2022: :fixed B ,_) ],
+    'iso885915' => [ "ISO 8859-15 (Latin-9)", qw(2022: :fixed B ,b) ],
+    'iso885916' => [ "ISO 8859-16 (Latin-10)", qw(2022: :fixed B ,f) ],
+    'euccn' => [ "EUC-CN (China (PRC), GB 2312)",
+		  qw(2022: :fixed B $A) ],              # (mb: euc-cn a1-fe a1-fe)
+    'euckr' => [ "EUC-KR (South Korean, KS X 1001)",
+		  qw(2022: :fixed B $C) ],
+
+    'big5' => [ "Big-5 (Taiwan - ROC)",
+		qw(mb: big5 a1-c6,c9-f9 40-7e,a1-fe) ],
+
     'detect'    => [ "Automatic detection" ],
   );
 
@@ -129,16 +151,20 @@ sub list_input_coding {
     my %r = ();
     for (sort keys %coding_aliases) {
 	$r{$coding_aliases{$_}} //= [];
-	push $r{$coding_aliases{$_}}, $_;
+	push @{$r{$coding_aliases{$_}}}, $_;
     }
     
     print "List of supported input codings:\n";
 
     for (sort(keys(%codings))) {
 	printf("  %-13s: %s\n", $_, $codings{$_}->[0]);
-	printf("        %s\n", "(aliases: " . join(", ", @{$r{$_}}) . ")") if $r{$_};
+	printf("        %s\n", 
+	       "(" . 
+	       (@{$r{$_}} >= 2 ? "aliases" : "alias") .
+	       " : " .
+	       join(", ", @{$r{$_}}) . ")") if $r{$_};
     }
-    print "(cases, spaces and hyphens are ignored: e.g. ISO-8859-1 is accepted)\n";
+    print "\n(cases, spaces and hyphens are ignored: e.g. ISO-8859-1 is accepted)\n";
     exit 0;
 }
 
@@ -162,7 +188,7 @@ my ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
     my @a;
 
     if (defined $iso2022init) {
-	@a = split(/ +/, $iso2022init);
+	@a = ('2022:', split(/ +/, $iso2022init));
     } else {
 	if ($incode eq 'detect') {
 	    # input encoding guess (detection)
@@ -178,9 +204,16 @@ my ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
 
     if (ref $a[0]) {
 	($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = @a;
-    } else {
+    } elsif ($a[0] eq '2022:') {
+	shift @a;
 	($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = 
 	  (\&process_GLR_2022, \&process_GLR_2022, \&process_C0_2022, \&process_init_2022, @a);
+    } elsif ($a[0] eq 'mb:') {
+	shift @a;
+	($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = 
+	  (\&process_GL_ASCII, \&process_GR_mb, \&process_C0_ASCII, \&process_init_mb, @a);
+    } else {
+	die "internal error: unknown coding system definition";
     }
 }
 
@@ -281,8 +314,8 @@ sub detect_coding {
 our $chareaten = 0;
 our $charforward = 0;
 
-sub uline {
-    my $_ = $_[0];
+sub uline_decorate {
+    local $_ = $_[0];
     return $_ if $decorate != 2;
     return s/(.)/_\b$1\b$1/ugr;
 }
@@ -305,9 +338,9 @@ sub uline {
 	    $ld++ if $dec =~ /\p{Ea: W}|\p{Ea: F}/;
 	    my $l = int((length($dec) + 2) / 3);
 	    my $sp = $l * 3 - length($dec);
-	    $chrbuf .= uline($dec);
+	    $chrbuf .= uline_decorate($dec);
 	    if ($sp) {
-		$chrbuf .= uline(" " x ($sp - 1));
+		$chrbuf .= uline_decorate(" " x ($sp - 1));
 		put_normal("", 0);
 		$chrbuf .= " ";
 	    }
@@ -316,7 +349,7 @@ sub uline {
 #	    print "decorate: $dec for spc $n, strlen $ld, used_blocks $l, added_spaces $sp -> etn $chreaten fwd $chrforward\n";
 	    $chrforward = 0 if $chrforward < 0; #for safety
 	} else {
-	    $chrbuf .= ($decorate ? uline($dec) : $smpl);
+	    $chrbuf .= ($decorate ? uline_decorate($dec) : $smpl);
 	    $chreaten = $chrforward = $n - 1;
 	}
     }
@@ -334,32 +367,32 @@ sub uline {
     }
 
     sub put_normal {
-	my ($_, $n) = @_;
+	my ($s, $n) = @_;
 	if ($curdecorate != 0) {
 	    $chrbuf .= "\e[0m";
 	    $curdecorate = 0;
 	}
-	return if $_ eq '';
+	return if $s eq '';
 	die if $n == 0;
 	# $chrforward = length($sj) - 1;
-	my $width = wcwidth($_);
+	my $width = wcwidth($s);
 	if ($width == 2) {
 	    $chrforward = 1;
 	} elsif ($width == 0) {
 	    $chrforward = 0;
-	    $_ = " $_";
+	    $s = " $s";
 	} else {
 	    $chrforward = 0;
 	}
-	if (/\p{Bidi_class: R}/) {
-	    $_ = "\x{202d}$_\x{2069}";
+	if ($s =~ /\p{Bidi_class: R}/ && !$textbased) {
+	    $s = "\x{202d}$s\x{2069}"; # force LTR direction in char dump.
 	}
 	$chreaten = $n - 1;
 	if ($charbased) {
-	    $chrbuf .= $_ . (" " x (2-$chrforward));
+	    $chrbuf .= $s . (" " x (2-$chrforward));
 	    $chrforward = 0;
 	} else {
-	    $chrbuf .= $_;
+	    $chrbuf .= $s;
 	}
 	$chrforward = $chareaten if $charforward > $chareaten;
 	# output wider than available:
@@ -474,7 +507,8 @@ sub process_GR_8859_1 {
     use Text::CharWidth;
 
     my $chrattr_cache = "";
-    # 0x80 -> checked, 0x40 -> char printable class
+    # 0x80 -> checked
+    # 0x40 -> char printable class
     # 0x20 -> mbwidth available
     # 0x03 -> char width (0-2)
 
@@ -541,7 +575,7 @@ sub put_maybe_fullwidth {
     }
 }
 
-### input processing: japanese specific
+### input processing: Japanese specific
 
 sub process_GR_SJIS {
     my ($ofs, $code) = (@_);
@@ -630,91 +664,49 @@ sub process_GR_UTF8 {
     process_GR_none(@_);
 }
 
-### input processing: ISO-2022 handling
+### input processing: ISO/IEC 2022 and compliant encodings
 
-my @GLR_init;
-my @G_init;
-my @GLR;
-my @G;
-my $SS;
-my ($allow_LS, $allow_SS, $allow_designate);
+{
+    my %encode_cache;
+    my %I646table;
 
-sub process_init_2022 {
-    my @p = @_;
 
-    $allow_SS = $allow_LS = $allow_designate = 1;
+    my @GLR_init;
+    my @G_init;
+    my @GLR;
+    my @G;
+    my $SS;
+    my ($allow_LS, $allow_SS, $allow_designate);
 
-    while ($p[0] =~ /^:/) {
-	given(shift @p) {
-	    when (':noshift') {
-		$allow_SS = $allow_LS = 0;
-	    }
-	    when (':noSS') {
-		$allow_SS = 0;
-	    }
-	    when (':noLS') {
-		$allow_LS = 0;
-	    }
-	    when (':nodesignate') {
-		$allow_designate = 0;
-	    }
-	    when (':fixed') {
-		$allow_SS = $allow_LS = $allow_designate = 0;
-	    }
-	    when (':noreset') {
-		$reset_2022_status = 0; # regardless of cmdline options
-	    }
-	    default {
-		die "Error: unknown flag for ISO-2022 initialization: $_\n";
-	    }
-	}
-    }
-    @GLR_init = (0, 1);
-    if ($p[0] =~ /^[0123]$/) {
-	$GLR_init[0] = shift @p;
-	if ($p[0] =~ /^[0123]$/) {
-	    $GLR_init[1] = shift @p;
-	}
-    }
-    die "Error: too many codeset for ISO-2022 initialization\n" if (@p > 4);
-    
-    @G_init = ('B', '', '', '');
-    for my $_ (0 .. 3) {
-	my $g = $p[$_];
-	last unless defined $g;
-	die "Error: bad ISO2022 specifier for G$_: $g\n" unless $g =~ /^[\,\$]?[\@-\~]$/s;
-	$G_init[$_] = $g;
-    }
-
-    @GLR = @GLR_init;
-    @G = @G_init;
-    $SS = 0;
-}
-
-my %encode_cache;
-my %I646table;
-
-BEGIN {
-    %encode_cache = ( '$A' => 'GB2312',
-		      '$C' => 'EUC-KR',
-#		      '$G' => 'EUC-TW', # only Big5 is included in pure Perl distribution
-		      ',A' => 'ISO-8859-1', # not used: directly implemented
-		      ',B' => 'ISO-8859-2',
-		      ',F' => 'ISO-8859-3',
-		      ',D' => 'ISO-8859-4',
-		      ',F' => 'ISO-8859-7',
-		      ',G' => 'ISO-8859-6',
-		      ',H' => 'ISO-8859-8',
-		      ',L' => 'ISO-8859-5',
-		      ',M' => 'ISO-8859-9',
-		      ',T' => 'ISO-8859-11',
-		      ',V' => 'ISO-8859-10',
-		      ',Y' => 'ISO-8859-13',
-		      ',_' => 'ISO-8859-14',
-		      ',b' => 'ISO-8859-15',
-		      ',f' => 'ISO-8859-16',
-		    );
-    %I646table = 
+    BEGIN {
+	%encode_cache = ( '$A' => 'GB2312',
+			  '$B' => 'EUC-JP',     # not used: directly implemented
+			  '$C' => 'EUC-KR',
+			  # '$G' => 'EUC-TW', # only Big5 is included in pure Perl distribution
+			  ',A' => 'ISO-8859-1', # not used: directly implemented
+			  ',B' => 'ISO-8859-2',
+			  ',C' => 'ISO-8859-3',
+			  ',D' => 'ISO-8859-4',
+			  ',F' => 'ISO-8859-7',
+			  ',G' => 'ISO-8859-6',
+			  ',H' => 'ISO-8859-8',
+			  ',L' => 'ISO-8859-5',
+			  ',M' => 'ISO-8859-9',
+			  ',T' => 'ISO-8859-11',
+			  ',V' => 'ISO-8859-10',
+			  ',Y' => 'ISO-8859-13',
+			  ',_' => 'ISO-8859-14',
+			  ',b' => 'ISO-8859-15',
+			  ',f' => 'ISO-8859-16',
+			);
+	# Note: Technically, $B corresponds to jisx0208-raw, $C to KSC5601-raw, etc.
+	# We need to use FULLWIDTH variants for ASCII-conflicting characters, and
+	# current Perl implementation of *-raw encodings _actually_ does that,
+	# against the mapping definitions of Unicode Consortium.
+	# However, to make this doubly-sure for any future,
+	# we use EUC-encoded tables here.
+	
+	%I646table = 
       ('@' => q(#¤@[\]^_`{|}~), # 4/0  IRV old
        'A' => q(£$@[\]^_`{|}~), # 4/1  UK
        'B' => q(#$@[\]^_`{|}~), # 4/2  US-ASCII
@@ -738,251 +730,377 @@ BEGIN {
        '!A'=> q(#¤@¡Ñ]¿_`´ñ[¨), # 2/1 4/1  CU
        '!C'=> q(£¤ÓÉÍÚÁ_óéíúá), # 2/1 4/3  IE
        );
-}
-
-sub get_encode_cache {
-    my $key = $_[0];
-    return undef unless exists $encode_cache{$key};
-    my $e = $encode_cache{$key};
-    unless (ref($e)) {
-	my $enc = find_encoding($e) // die "Error: Can't load encoding $e";
-#	print "Info: Loaded encoding $e\n";
-	$e = $encode_cache{$key} = $enc;
-    }
-    return $e;
-}
-
-sub process_GLR_2022 {
-    my ($ofs, $code) = (@_);
-
-    my $is_GR = ($code >= 0x80 ? 1 : 0);
-
-    if (($code == 0x8e || $code == 0x8f) && $allow_SS) {
-	# SS2/3
-	$SS = $code - 0x8c;
-	put_fill (1);
-	return;
-    }
-    if ($code >= 0x80 && $code < 0xA0) {
-	# C1
-	$SS = 0;
-	process_GR_none(@_);
-	return;
     }
 
-    my $plane = $SS ? $SS : $GLR[($code > 0x80 ? 1 : 0)];
-    $SS = 0;
-
-    my $G = $G[$plane];
-    my $c = $code & 0x7f;
-    
-#    printf "ofs %04x: plane %d, assign %s, code %02x (%02x)\n", $ofs, $plane, $G, $c, $code;
- #   $chrbuf .= sprintf("<%04x>>", $ofs);
-
-    given ($G) {
-	when (['B']) {
-	    process_GL_ASCII($ofs, $c);
-	}
-	when (',A') {
-	    # ISO-8859-1 GR
-	    my $s = pack("U", 0x80 | $code);
-	    put_normal($s, 1);
-	}
-	when ('I') {
-	    if ($c == 0x20 && $is_GR == 0) {
-		process_GL_ASCII($ofs, 0x20);
-	    } elsif ($c >= 0x21 && $c <= 0x5f) {
-		my $s = $enc_SJ->decode(chr(0x80 | $c));
-#		printf "JIS_KANA: decode result is %s\n", join(".", unpack("U*", $s));
-#		$chrbuf .= sprintf("[JK[");
-		put_normal($s, 1);
-#		$chrbuf .= sprintf("]]");
-	    } else {
-#		printf "JIS_KANA: out-of-bounds (%02x)\n", $c;
-#		$chrbuf .= sprintf("[JKO[");
-		put_decorate(".");
-#		$chrbuf .= sprintf("]]");
-	    }
-	}
-	when (['$B', '$@']) {
-	    my $next = get($ofs + 1) & 0x7f;
-	    if ($next >= 0x21 && $next <= 0x7e) {
-		put_maybe_fullwidth($enc_EJ->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
-	    } else {
-		put_decorate(".");
-	    }
-	}
-	when ('$D') {
-	    my $next = get($ofs + 1) & 0x7f;
-	    if ($next >= 0x21 && $next <= 0x7e) {
-		put_maybe_fullwidth($enc_EJ->decode(chr(0x8f) . chr(0x80 | $c) . chr(0x80 | $next)), 2);
-		return;
-	    } else {
-		put_decorate(".");
-	    }
-	}
-	when (/^!?[\x40-\x7f]$/) {
-	    # ISO-646 or other 94-char set
-	    my $table = $I646table{$_};
-	    if (defined $table) {
-		my $key = $I646table{B}; # US ASCII
-		my $i = index($key, chr($c));
-		if ($i != -1) {
-		    put_normal(substr($table, $i, 1), 1);
-		} else {
-		    process_GL_ASCII($ofs, $c);
+    sub process_init_2022 {
+	my @p = @_;
+	
+	$allow_SS = $allow_LS = $allow_designate = 1;
+	
+	while ($p[0] =~ /^:/) {
+	    given(shift @p) {
+		when (':noshift') {
+		    $allow_SS = $allow_LS = 0;
 		}
-	    } else {
-		# TODO: other 94char codes
-		put_decorate("x");
+		when (':noSS') {
+		    $allow_SS = 0;
+		}
+		when (':noLS') {
+		    $allow_LS = 0;
+		}
+		when (':nodesignate') {
+		    $allow_designate = 0;
+		}
+		when (':fixed') {
+		    $allow_SS = $allow_LS = $allow_designate = 0;
+		}
+		when (':noreset') {
+		$reset_2022_status = 0; # regardless of cmdline options
+	    }
+		default {
+		    die "Error: unknown flag for ISO-2022 initialization: $_\n";
+		}
 	    }
 	}
-	when (/^,[B-z]$/) {
-	    # ISO-8859-? GR or other 96-char set
-	    my $enc = get_encode_cache($G);
-	    if ($enc) {
-		my $s = $enc->decode(chr(0x80 | $code));
-		if (length $s == 1 && $s ne '\x{fffd}') {
+	@GLR_init = (0, 1);
+	if ($p[0] =~ /^[0123]$/) {
+	    $GLR_init[0] = shift @p;
+	    if ($p[0] =~ /^[0123]$/) {
+		$GLR_init[1] = shift @p;
+	    }
+	}
+	die "Error: too many codeset for ISO-2022 initialization\n" if (@p > 4);
+    
+	@G_init = ('B', '', '', '');
+	for (0 .. 3) {
+	    my $g = $p[$_];
+	    last unless defined $g;
+	    die "Error: bad ISO2022 specifier for G$_: $g\n" unless $g =~ /^[\,\$]?[\@-\~]$/s;
+	    $G_init[$_] = $g;
+	}
+
+	@GLR = @GLR_init;
+	@G = @G_init;
+	$SS = 0;
+    }
+
+    sub get_encode_cache {
+	my $key = $_[0];
+	return undef unless exists $encode_cache{$key};
+	my $e = $encode_cache{$key};
+	unless (ref($e)) {
+	    my $enc = find_encoding($e) // die "Error: Can't load encoding $e";
+    #	print "Info: Loaded encoding $e\n";
+	    $e = $encode_cache{$key} = $enc;
+	}
+	return $e;
+    }
+
+    sub process_GLR_2022 {
+	my ($ofs, $code) = (@_);
+
+	my $is_GR = ($code >= 0x80 ? 1 : 0);
+
+	if (($code == 0x8e || $code == 0x8f) && $allow_SS) {
+	    # SS2/3
+	    $SS = $code - 0x8c;
+	    put_fill (1);
+	    return;
+	}
+	if ($code >= 0x80 && $code < 0xA0) {
+	    # C1
+	    $SS = 0;
+	    process_GR_none(@_);
+	    return;
+	}
+
+	my $plane = $SS ? $SS : $GLR[($code > 0x80 ? 1 : 0)];
+	$SS = 0;
+
+	my $G = $G[$plane];
+	my $c = $code & 0x7f;
+
+    #    printf "ofs %04x: plane %d, assign %s, code %02x (%02x)\n", $ofs, $plane, $G, $c, $code;
+     #   $chrbuf .= sprintf("<%04x>>", $ofs);
+
+	given ($G) {
+	    when ('B') {
+		process_GL_ASCII($ofs, $c);
+	    }
+	    when (',A') {
+		# ISO-8859-1 GR
+		my $s = pack("U", 0x80 | $code);
+		put_normal($s, 1);
+	    }
+	    when ('I') {
+		if ($c == 0x20 && $is_GR == 0) {
+		    process_GL_ASCII($ofs, 0x20);
+		} elsif ($c >= 0x21 && $c <= 0x5f) {
+		    my $s = $enc_SJ->decode(chr(0x80 | $c));
+    #		printf "JIS_KANA: decode result is %s\n", join(".", unpack("U*", $s));
+    #		$chrbuf .= sprintf("[JK[");
 		    put_normal($s, 1);
+    #		$chrbuf .= sprintf("]]");
+		} else {
+    #		printf "JIS_KANA: out-of-bounds (%02x)\n", $c;
+    #		$chrbuf .= sprintf("[JKO[");
+		    put_decorate(".");
+    #		$chrbuf .= sprintf("]]");
+		}
+	    }
+	    when (['$B', '$@']) {
+		my $next = get($ofs + 1) & 0x7f;
+		if ($next >= 0x21 && $next <= 0x7e) {
+		    put_maybe_fullwidth($enc_EJ->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
 		} else {
 		    put_decorate(".");
 		}
-	    } else {
-		put_decorate("x");
 	    }
-	}
-	when (/^\$[AC]$/) { # G (EUC-TW) dropped as optional in Perl
-	    my $next = get($ofs + 1) & 0x7f;
-	    if ($next >= 0x21 && $next <= 0x7e) {
+	    when ('$D') {
+		my $next = get($ofs + 1) & 0x7f;
+		if ($next >= 0x21 && $next <= 0x7e) {
+		    put_maybe_fullwidth($enc_EJ->decode(chr(0x8f) . chr(0x80 | $c) . chr(0x80 | $next)), 2);
+		    return;
+		} else {
+		    put_decorate(".");
+		}
+	    }
+	    when (/^[\x21-\x23]?[\x40-\x7e]$/) {
+		# ISO-646 or other 94-char set
+		my $table = $I646table{$_};
+		if (defined $table) {
+		    my $key = $I646table{B}; # US ASCII
+		    my $i = index($key, chr($c));
+		    if ($i != -1) {
+			put_normal(substr($table, $i, 1), 1);
+		    } else {
+			process_GL_ASCII($ofs, $c);
+		    }
+		} else {
+		    # TODO: other 94char codes
+		    put_decorate("x");
+		}
+	    }
+	    when (/^,[\x42-\x7e]$/) {
+		# ISO-8859-? GR or other 96-char set
 		my $enc = get_encode_cache($G);
-		put_maybe_fullwidth($enc->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
-		$chreaten = $chrforward = 1;
-	    } else {
-		put_decorate(".");
+		if ($enc) {
+		    my $s = $enc->decode(chr(0x80 | $code));
+		    if (length $s == 1 && $s ne "\x{fffd}") {
+			put_normal($s, 1);
+		    } else {
+			put_decorate(".");
+		    }
+		} else {
+		    put_decorate("x");
+		}
+	    }
+	    when (/^\$[AC]$/) { # G (EUC-TW) dropped as optional in Perl
+		my $next = get($ofs + 1) & 0x7f;
+		if ($next >= 0x21 && $next <= 0x7e) {
+		    my $enc = get_encode_cache($G);
+		    put_maybe_fullwidth($enc->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
+		    $chreaten = $chrforward = 1;
+		} else {
+		    put_decorate(".");
+		}
+	    }
+    #	when (/^\$[H-M]$/) {
+    #	    my $next = get($ofs + 1) & 0x7f;
+    #	    my $next2 = get($ofs + 2) & 0x7f;
+    #	    if ($next >= 0x21 && $next <= 0x7e) {
+    #		my $enc = get_encode_cache('$G'); # EUC-TW
+    #		put_maybe_fullwidth($enc->decode(chr(0xa1 + ord(substr($G, 2, 1)) - 0x48) . chr(0x80 | $c) . chr(0x80 | $next)), 2);
+    #		$chreaten = 2;
+    #		$chrforward = 1;
+    #	    } else {
+    #		put_decorate(".");
+    #	    }
+    #	}
+
+	    default {
+		put_decorate("x"); # "x"
 	    }
 	}
-#	when (/^\$[H-M]$/) {
-#	    my $next = get($ofs + 1) & 0x7f;
-#	    my $next2 = get($ofs + 2) & 0x7f;
-#	    if ($next >= 0x21 && $next <= 0x7e) {
-#		my $enc = get_encode_cache('$G'); # EUC-TW
-#		put_maybe_fullwidth($enc->decode(chr(0xa1 + ord(substr($G, 2, 1)) - 0x48) . chr(0x80 | $c) . chr(0x80 | $next)), 2);
-#		$chreaten = 2;
-#		$chrforward = 1;
-#	    } else {
-#		put_decorate(".");
-#	    }
-#	}
-	
-	default {
-	    put_decorate("x"); # "x"
-	}
+
+    #    $chrbuf .= sprintf("<<%04x,%d,%d>", $ofs, $chreaten, $chrforward);
     }
 
-#    $chrbuf .= sprintf("<<%04x,%d,%d>", $ofs, $chreaten, $chrforward);
+    sub process_C0_2022 {
+	my ($ofs, $code) = (@_);
+
+	$SS = 0;
+
+	given ($code) {
+	    when ([0x10, 0x13, 0x11, 0x00]) {
+		if ($reset_2022_status) {
+		    # workaround for half-binary data:
+		    # reset shift statuses at each line-beginning
+		    @G = @G_init;
+		    @GLR = @GLR_init;
+		}
+		process_C0_ASCII(@_);
+	    }
+	    when ([0x0e, 0x0f]) {
+		# LS0 (SO), LS1 (SI)
+		continue unless $allow_LS;
+		$GLR[0] = $code ^ 0x0f;
+		put_fill(1);
+	    }
+	    when (0x1b) {
+		my $n = 0;
+		my $targetC = get($ofs + 1);
+
+		given ($targetC) {
+		    when ([0x6e, 0x6f]) {
+			# LS2, LS3
+			break if !$allow_LS;
+			$GLR[0] = $targetC & 3;
+			put_fill(1);
+			$chreaten = 1; $chrforward = 0;
+			return;
+		    }
+		    when ([0x7e, 0x7d, 0x7c]) {
+			# LS[123]R
+			break if !$allow_LS;
+			$GLR[1] = 0x7f - $targetC;
+			put_fill(1);
+			$chreaten = 1; $chrforward = 0;
+			return;
+		    }
+		    when ([0x4e, 0x4f]) {
+			# SS2, SS3
+			break if !$allow_SS;
+			$SS = $targetC & 3;
+			put_fill(1);
+			$chreaten = 1; $chrforward = 0;
+			return;
+		    }
+		    when ([0x20]) {
+			# announcer
+			break if !$allow_designate;
+			my $codeA = get($ofs + 2);
+			if ($codeA >= 0x41 && $codeA <= 0x5C) {
+			    put_fill(1);
+			    $chreaten = 2; $chrforward = 0;
+			    return;
+			}
+			break;
+		    }
+		}
+
+		if ($allow_designate) {
+		    my $target = -1;
+		    my $assign = "";
+
+		    if ($targetC >= 0x28 && $targetC <= 0x2f) {
+
+			$target = $targetC & 3;
+			my $is_96char = ($targetC & 4) ? "," : "";
+
+			my $setC = get($ofs + 2);
+			if ($setC == 0x21) {
+			    $setC = get($ofs + 3);
+			    if ($setC >= 0x40 && $setC <= 0x7e) {
+				$assign = $is_96char . '!' . chr($setC);
+				$n = 4;
+			    }
+			} elsif ($setC >= 0x40 && $setC <= 0x7e) {
+			    $assign = $is_96char . chr($setC);
+			    $n = 3;
+			}
+		    } elsif ($targetC == 0x24) {
+			my $targetC = get($ofs + 2);
+			if ($targetC >= 0x40 && $targetC <= 0x42) {
+			    $target = 0;
+			    $assign = '$' . chr($targetC);
+			$n = 3;
+			} elsif ($targetC >= 0x28 && $targetC <= 0x2b) {
+			    my $setC = get($ofs + 3);
+			    if ($setC >= 0x40 && $setC <= 0x7e) {
+				$target = $targetC & 3;
+				$assign = '$' . chr($setC);
+				$n = 4;
+			    }
+			}
+		    }
+		    if ($n) {
+			#printf "ISO-2022 SEQUENCE %d: ofs %x, target G%d, assign %s\n", $n, $ofs, $target, $assign;
+			$G[$target] = $assign;
+			put_fill(1);
+			$chreaten = $n - 1;
+			$chrforward = 0;
+			return;
+		    }
+		}
+		continue
+	    }
+	    default {
+		process_C0_ASCII(@_);
+	    }
+	}
+    }
 }
 
-sub process_C0_2022 {
-    my ($ofs, $code) = (@_);
+### input processing: non ISO/IEC 2022 encodings with fixed-length multi-byte block
 
-    $SS = 0;
+{
+    my @mb_input_range;
+    my $mb_input_enc;
 
-    given ($code) {
-	when ([0x10, 0x13, 0x11, 0x00]) {
-	    if ($reset_2022_status) {
-		# workaround for half-binary data:
-		# reset shift statuses at each line-beginning
-		@G = @G_init;
-		@GLR = @GLR_init;
+    sub process_init_mb (@) {
+	@mb_input_range = ();
+	my $enc = shift @_;
+
+	$mb_input_enc = find_encoding($enc) // die "internal error: can't find encoding $enc";
+
+	for (@_) {
+	    my @a = split(",", $_);
+	    my @o = ();
+	    for (@a) {
+		m/^([0-9a-fA-F]{2})-([0-9a-fA-F]{2})\z/s or die "internal error: bad code spec";
+		my ($f, $t) = (hex($1), hex($2));
+#		printf "%d-%d: %02x-%02x\n", scalar(@mb_input_range), scalar(@o) / 2, $f, $t;
+		die "internal error: bad code spec" if ($f > $t);
+		die "internal error: bad code spec" if (scalar(@mb_input_range) == 0 && $f < 0x80);
+		push @o, hex($1), hex($2);
 	    }
-	    process_C0_ASCII(@_);
+	    die "internal error: bad code spec" unless @o;
+	    push @mb_input_range, \@o;
 	}
-	when ([0x0e, 0x0f]) {
-	    # LS0 (SO), LS1 (SI)
-	    continue unless $allow_LS;
-	    $GLR[0] = $code ^ 0x0f;
-	    put_fill(1);
-	}
-	when (0x1b) {
-	    my $n = 0;
-	    my $targetC = get($ofs + 1);
+	die "internal error: bad code spec" unless @mb_input_range;
+    }
 
-	    given ($targetC) {
-		when ([0x6e, 0x6f]) {
-		    # LS2, LS3
-		    break if !$allow_LS;
-		    $GLR[0] = $targetC & 3;
-		    put_fill(1);
-		    $chreaten = 1; $chrforward = 0;
-		    return;
-		}
-		when ([0x7e, 0x7d, 0x7c]) {
-		    # LS[123]R
-		    break if !$allow_LS;
-		    $GLR[1] = 0x7f - $targetC;
-		    put_fill(1);
-		    $chreaten = 1; $chrforward = 0;
-		    return;
-		}
-		when ([0x4e, 0x4f]) {
-		    # SS2, SS3
-		    break if !$allow_SS;
-		    $SS = $targetC & 3;
-		    put_fill(1);
-		    $chreaten = 1; $chrforward = 0;
-		    return;
-		}
-	    }
+    sub process_GR_mb ($$) {
+	my ($ofs, $code) = (@_);
+	my $s = '';
 
-	    if ($allow_designate) {
-		my $target = -1;
-		my $assign = "";
+	OUT_OF_RANGE: {
+	    SCAN:
+	      for my $n (0 .. (@mb_input_range - 1)) {
+		  my $c = get($ofs + $n) // last OUT_OF_RANGE;
 
-		if ($targetC >= 0x28 && $targetC <= 0x2f) {
-			    
-		    $target = $targetC & 3;
-		    my $is_96char = ($targetC & 4) ? "," : "";
-		    
-		    my $setC = get($ofs + 2);
-		    if ($setC == 0x21) {
-			$setC = get($ofs + 3);
-			if ($setC >= 0x40 && $setC <= 0x7e) {
-			    $assign = $is_96char . '!' . chr($setC);
-			    $n = 4;
-			}
-		    } elsif ($setC >= 0x40 && $setC <= 0x7e) {
-			$assign = $is_96char . chr($setC);
-			$n = 3;
-		    }
-		} elsif ($targetC == 0x24 && $allow_designate) {
-		    my $targetC = get($ofs + 2);
-		    if ($targetC >= 0x40 && $targetC <= 0x42) {
-			$target = 0;
-			$assign = '$' . chr($targetC);
-		    $n = 3;
-		    } elsif ($targetC >= 0x28 && $targetC <= 0x2b) {
-			my $setC = get($ofs + 3);
-			if ($setC >= 0x40 && $setC <= 0x7e) {
-			    $target = $targetC & 3;
-			    $assign = '$' . chr($setC);
-			    $n = 4;
-			}
-		    }
-		}
-		if ($n) {
-		    #printf "ISO-2022 SEQUENCE %d: ofs %x, target G%d, assign %s\n", $n, $ofs, $target, $assign;
-		    $G[$target] = $assign;
-		    put_fill(1);
-		    $chreaten = $n - 1;
-		    $chrforward = 0;
-		    return;
-		}
-	    }
-	    continue
-	}
-	default {
-	    process_C0_ASCII(@_);
-	}
+#		  printf "mb: ofs %x+%x, char %02x\n", $ofs, $n, $c;
+		  my @r = @{$mb_input_range[$n]};
+#		  printf "mb: ofs %x+%x, spec %s\n", $ofs, $n, join("-", @r);
+		  while (@r) {
+		      my ($f, $t) = (shift(@r), shift(@r));
+#		      printf "mb: ofs %x+%x, char %02x, range %02x-%02x\n", $ofs, $n, $c, $f, $t;
+		      if ($f <= $c && $c <= $t) {
+#			  printf "mb: ofs %x+%x, char %02x OK\n", $ofs, $n, $c;
+			  $s .= chr($c);
+			  next SCAN;
+		      }
+		  }
+		  last OUT_OF_RANGE;
+	      }
+	      die if length $s != scalar @mb_input_range;
+
+	      put_maybe_fullwidth($mb_input_enc->decode($s), length $s);
+	      return;
+	  }
+#	printf "mb: ofs %x considered out-of-range\n", $ofs;
+	process_GR_none(@_);
     }
 }
 
