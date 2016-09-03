@@ -68,7 +68,7 @@ our %codings =
     'iso88595' => [ "ISO 8859-5", qw(2022: :fixed B ,L) ],
 #    'iso88596' => [ "ISO 8859-6", qw(2022: :fixed B ,G) ],
     'iso88597' => [ "ISO 8859-7", qw(2022: :fixed B ,F) ],
-    'iso88598' => [ "ISO 8859-7", qw(2022: :fixed B ,H) ],
+    'iso88598' => [ "ISO 8859-8", qw(2022: :fixed B ,H) ],
     'iso88599' => [ "ISO 8859-9 (Latin-5)", qw(2022: :fixed B ,M) ],
     'iso885910' => [ "ISO 8859-10 (Latin-6)", qw(2022: :fixed B ,V) ],
     'iso885913' => [ "ISO 8859-13 (Latin-7)", qw(2022: :fixed B ,Y) ],
@@ -612,8 +612,11 @@ sub process_GR_EucJP {
     if ($code == 0x8f) {
 	my $next = get($ofs + 1);
 	my $next2 = get($ofs + 2);
-	put_maybe_fullwidth($enc_EJ->decode(chr($code) . chr($next). chr($next2)), 3);
-	return;
+	if ($next >= 0xa1 && $next <= 0xfe
+	    && $next2 >= 0xa1 && $next2 <= 0xfe) {
+	    put_maybe_fullwidth($enc_EJ->decode(chr($code) . chr($next). chr($next2)), 3);
+	    return;
+	}
     }
     process_GR_none(@_);
 }
