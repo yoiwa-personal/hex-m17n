@@ -59,6 +59,8 @@ our %codings =
 
     'iso2022'     => [ "ISO 2022 (neutral: GR default to ISO 8859-1)",
 		     qw(2022: B ,A) ],
+    'iso2022u'     => [ "ISO 2022 with transition to UTF-8",
+		     qw(2022: :utf_ok B ,A) ],
     'iso2022jp' => [ "ISO-2022-JP (other ISO-2022-KR, CN is also accepted)",
 		     qw(2022: B I) ],
     'japaneseiso8' => [ "EUC-JP with ISO-2022 handling", qw(2022: B $B I $D) ],
@@ -276,7 +278,11 @@ sub detect_coding {
 	when (m#\e\$?[\$(-/][A-~\@]
 		[\x0e\x0f\x1b\x20-\x7e\x8e\x8f\xa0-\xff]+
 		(?:\e\([ABGHJ-LRTY`afghiwx\@]|\n)#sx) {
-	    'ISO-2022'
+	    if (m|\e%G| && m|\e%@|) {
+		'ISO-2022-U'
+	    } else {
+		'ISO-2022'
+	    }
 	}
 	when (/\A(?:[\x00-\x7f])*\z/sx) {
 	    'ASCII'
@@ -678,8 +684,9 @@ sub process_GR_UTF8 {
     my @G_init;
     my @GLR;
     my @G;
+
     my $SS;
-    my ($allow_LS, $allow_SS, $allow_designate);
+    my ($allow_LS, $allow_SS, $allow_designate, $allow_UTF);
 
     BEGIN {
 	%encode_cache = ( '$A' => 'GB2312',
@@ -739,7 +746,8 @@ sub process_GR_UTF8 {
 	my @p = @_;
 	
 	$allow_SS = $allow_LS = $allow_designate = 1;
-	
+	$allow_UTF = 0;
+
 	while ($p[0] =~ /^:/) {
 	    given(shift @p) {
 		when (':noshift') {
@@ -758,8 +766,11 @@ sub process_GR_UTF8 {
 		    $allow_SS = $allow_LS = $allow_designate = 0;
 		}
 		when (':noreset') {
-		$reset_2022_status = 0; # regardless of cmdline options
-	    }
+		    $reset_2022_status = 0; # regardless of cmdline options
+		}
+		when (':utf_ok') {
+		    $allow_UTF = 1;
+		}
 		default {
 		    die "Error: unknown flag for ISO-2022 initialization: $_\n";
 		}
@@ -990,6 +1001,26 @@ sub process_GR_UTF8 {
 			}
 			break;
 		    }
+		    when (0x25) {
+			# code transition
+			break if !$allow_UTF;
+			my $codeA = get($ofs + 2);
+			if ($codeA == 0x47) {
+			    #printf "ISO-2022 SEQUENCE at %x: go to UTF\n", $ofs;
+			    put_fill(1);
+			    $chreaten = 2; $chrforward = 0;
+			    # switch to UTF (with special return)
+			    ($process_GL, $process_GR, $process_C0) = 
+			      (\&process_GL_ASCII,  \&process_GR_UTF8, \&process_C0_UTF8_in_2022);
+			    return;
+			} elsif ($codeA == 0x40) {
+			    # ISO-2022 calling: no-op
+			    put_fill(1);
+			    $chreaten = 2; $chrforward = 0;
+			    return;
+			}
+			break;
+		    }
 		}
 
 		if ($allow_designate) {
@@ -1000,6 +1031,7 @@ sub process_GR_UTF8 {
 
 			$target = $targetC & 3;
 			my $is_96char = ($targetC & 4) ? "," : "";
+			continue if $target == 0 && $is_96char; # 96-char set cannot be load into G0
 
 			my $setC = get($ofs + 2);
 			if ($setC == 0x21) {
@@ -1042,6 +1074,32 @@ sub process_GR_UTF8 {
 		process_C0_ASCII(@_);
 	    }
 	}
+    }
+
+    sub process_C0_UTF8_in_2022 ($$) {
+	my ($ofs, $code) = (@_);
+	if ($code == 0x1b) {
+	    if (get($ofs + 1) == 0x25) {
+		my $t = get($ofs + 2);
+		if ($t == 0x40) {
+		    # return to ISO-2022
+		    put_fill(1);
+		    $chreaten = 2; $chrforward = 0;
+		    # switch to UTF (with special return)
+		    ($process_GL, $process_GR, $process_C0) = 
+		      (\&process_GLR_2022, \&process_GLR_2022, \&process_C0_2022);
+		    @GLR = @GLR_init;
+		    @G = @G_init;
+		    return;
+		} elsif ($t == 0x47) {
+		    # UTF-8 calling: no-op
+		    put_fill(1);
+		    $chreaten = 2; $chrforward = 0;
+		    return;
+		}
+	    }
+	}
+	process_C0_ASCII(@_);
     }
 }
 
