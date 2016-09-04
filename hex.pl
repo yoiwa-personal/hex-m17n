@@ -39,6 +39,8 @@ our $textbased = 0;
 our $widthmethod = 0;
 our $is_tty = (-t STDOUT);
 our $incode = 'detect';
+our $outcode = 'detect';
+our $output_utf8 = 0;
 our $decorate = 2;
 our $outenc = undef;
 our $reset_2022_status = 1;
@@ -102,6 +104,7 @@ GetOptions ("ascii|a"     => sub { set_input_coding('binary') },
 	    "utf-8|u"     => sub { set_input_coding('utf8') },
 	    "junet|jis|iso-2022-jp|j" => sub { set_input_coding('jis') },
 	    "input-coding|i=s" => \&set_input_coding,
+	    "output-coding=s" => \$outcode,
 	    "list-coding" => \&list_input_coding,
 	    "decorate|d!" => \$decorate,
 	    "plaintext|p" => sub { $decorate = 0 },
@@ -182,7 +185,8 @@ if (!defined $ARGV[0] || $ARGV[0] eq '-') {
 if ($decorate == 2 && $is_tty) {
     $decorate = 1;
 }
-binmode(STDOUT, ":utf8");
+
+set_output_coding($outcode);
 
 my ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
 
@@ -328,6 +332,7 @@ sub uline_decorate {
 
 {
     my $curdecorate = 0;
+
     sub put_decorate {
 	my ($dec, $smpl, $n) = @_;
 	$smpl //= ("." x length $_[0]);
@@ -372,6 +377,15 @@ sub uline_decorate {
 	}
     }
 
+    sub put_ucs_nonprintable {
+	my ($c, $n) = @_;
+	if ($charbased) {
+	    put_decorate(sprintf("U+%X", $c), undef, $n);
+	} else {
+	    put_decorate("." x $n);
+	}
+    }
+
     sub put_normal {
 	my ($s, $n) = @_;
 	if ($curdecorate != 0) {
@@ -390,6 +404,10 @@ sub uline_decorate {
 	} else {
 	    $chrforward = 0;
 	}
+	if (ord($s) >= 0x20 && !is_printable_to_terminal($s)) {
+	    put_ucs_nonprintable(ord($s), $n);
+	    return;
+	}
 	if ($s =~ /\p{Bidi_class: R}/ && !$textbased) {
 	    $s = "\x{202d}$s\x{2069}"; # force LTR direction in char dump.
 	}
@@ -404,6 +422,36 @@ sub uline_decorate {
 	# output wider than available:
 	# happens when ISO-8859-1 (or similar) is dumped to
 	# CJK-width terminals.
+    }
+}
+
+### output: coding
+
+sub set_output_coding ($) {
+    my ($coding) = @_;
+
+    if ($coding eq 'detect') {
+	# use open IO => ':locale' has a side effect.
+	eval {
+	    use I18N::Langinfo ();
+	    $coding = I18N::Langinfo::langinfo (I18N::Langinfo::CODESET());
+	};
+	if ($@ || !$coding) {
+	    warn "langinfo() does not return coding system.";
+	    $coding = "utf8";
+	}
+    }
+    $outenc = find_encoding($coding) // die "output: cannot find coding $coding";
+    
+    $coding = $outenc->name(); # canonify for possible coding-dependent tweaks
+
+    if ($coding =~ /\Autf-8\z/i) {
+	binmode (STDOUT, ":utf8");
+	$output_utf8 = 1;
+    } else {
+	binmode (STDOUT, ":encoding($coding)") // return undef;
+	$output_utf8 = 0;
+	return 1;
     }
 }
 
@@ -516,6 +564,7 @@ sub process_GR_8859_1 {
     # 0x80 -> checked
     # 0x40 -> char printable class
     # 0x20 -> mbwidth available
+    # 0210 -> available in current output coding
     # 0x03 -> char width (0-2)
 
     sub check_char_attr {
@@ -527,7 +576,9 @@ sub process_GR_8859_1 {
 	    return $r if $r;
 	}
 	$r = 0x80; # checked
-	$r |= 0x40 if $char =~ /^\p{Print}$/;
+
+	my $printable = ($char =~ /^\p{Print}$/);
+	$r |= 0x40 if $printable;
 	
 	my $skip_classcheck = 0;
 	
@@ -537,7 +588,7 @@ sub process_GR_8859_1 {
 		$r |= (0x20 | $v);
 		$skip_classcheck = 1;
 	    }
-	} 
+	}
 	unless ($skip_classcheck) {
 	    $r |= 0x20 if ($widthmethod != 0) && ($r & 0x40 != 0);
 	    
@@ -554,6 +605,15 @@ sub process_GR_8859_1 {
 		$r |= 1;
 	    }
 	}
+	if ($output_utf8) {
+	    $r |= 0x10 if $printable && ($r & 0x20 != 0);
+	} else {
+	    my $s = $char;
+	    my $t = $outenc->encode($s, Encode::FB_QUIET);
+	    $r |= 0x10 if $printable && $s eq '' && length($t) >= 1;
+#	    printf("check U+%04X -> %d %d %d\n", $code, $printable, $s eq '', length($t) >= 1);
+	}
+
 	if ($code < 0x10000) {
 	    vec($chrattr_cache, $code, 8) = $r;
 	}
@@ -569,13 +629,22 @@ sub wcwidth {
 }
 
 sub is_printable_to_terminal {
-    return (check_char_attr($_[0]) & 0x60) == 0x60;
+    return (check_char_attr($_[0]) & 0x50) == 0x50;
 }
 
+my $fw_fill_char;
+
 sub put_maybe_fullwidth {
+    # Filters output of "decode", assuming input is "full-width".
+    # 2+ chars (decode may produce 2+ characters for "bad" inputs),
+    # U+FFFD substitution character,
+    # output-dependent unprintable characters.
     my ($s, $n) = @_;
     if (length $s > 1 || substr($s, 0, 1) eq "\x{fffd}") {
-	put_decorate("〓" . (" " x ($n - 2)), "." x $n, $n);
+	if (!$fw_fill_char) {
+	    $fw_fill_char = is_printable_to_terminal("\x{3013}") ? "\x{3013}" : "..";
+	}
+	put_decorate($fw_fill_char . (" " x ($n - 2)), "." x $n, $n);
     } else {
 	put_normal($s, $n);
     }
@@ -592,7 +661,10 @@ sub process_GR_SJIS {
     if ($code >= 0x80 && $code <= 0x9f || $code >= 0xe0 && $code <= 0xef) {
 	my $next = get($ofs + 1);
 	if ($next >= 0x40 && $next <= 0x7e || $next >= 0x80 && $next <= 0xfd) {
-	    put_maybe_fullwidth($enc_932->decode(chr($code) . chr($next)), 2);
+	    my $s = chr($code) . chr($next);
+	    my $o = $enc_SJ->decode($s);
+	    $o = $enc_932->decode($s) if (length($o) != 1 || substr($o, 0, 1) eq "\x{fffd}");
+	    put_maybe_fullwidth($o, 2);
 	    return;
 	}
     }
@@ -661,11 +733,7 @@ sub process_GR_UTF8 {
 		put_normal($s, $n);
 	    } else {
 #		printf "debug: char %x is NOT printable\n", $c;
-		if ($charbased) {
-		    put_decorate(sprintf("U+%X", $c), undef, $n);
-		} else {
-		    put_decorate("." x $n);
-		}
+		put_ucs_nonprintable($c, $n);
 	    }
 	    return;
 	}
