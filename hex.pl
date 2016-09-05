@@ -1,23 +1,38 @@
 #!/usr/bin/perl -C0
 # -*- coding: utf-8 -*-
-# hexja.pl version 0.10 - hexadecimal dump tool for Japanese
+# hexja.pl version 0.20 - hexadecimal dump tool for Japanese and other codings
 # (c) 2016 Yutaka OIWA.
 
-use Encode;
+use Encode qw(:default FB_QUIET);
 use utf8;
 use strict;
 
 use v5.10.0;
 use feature qw( switch unicode_strings );
+
+# debugging
+BEGIN {
+    sub debug;
+    my $dlevel = $ENV{HEXDEBUG} + 0;
+
+    if (exists $ENV{HEXDEBUG}) {
+	eval { sub debug { printf @_; } };
+    } else {
+        eval { sub debug { if ($dlevel & (0 + shift @_)) { printf @_; } }; };
+    }
+    # 4: locale and charwidth
+}
+
 no if ($] >= 5.018), 'warnings', qw( experimental::smartmatch );
 
 our $enc_SJ = find_encoding("Shift_JIS") // die;
 our $enc_932 = find_encoding("CP932") // die;
 our $enc_EJ = find_encoding("EUC-JP") // die;
 our $enc_U8 = find_encoding("UTF8") // die;
+our $enc_locale;
 
 use constant { BUFSIZE => 1024 };
-use Getopt::Long qw(:config bundling permute);
+use Getopt::Long qw(:config bundling require_order);
 
 # input byte handling
 our $addr = 0; # currently processing address in input
@@ -98,31 +113,41 @@ our %coding_aliases =
     'sjis'  => 'shiftjis',
     'guess' => 'detect' );
 
-GetOptions ("ascii|a"     => sub { set_input_coding('binary') },
-	    "shift-jis|s" => sub { set_input_coding('shiftjis') },
-	    "euc-jp|e"    => sub { set_input_coding('eucjp') },
-	    "utf-8|u"     => sub { set_input_coding('utf8') },
-	    "junet|jis|iso-2022-jp|j" => sub { set_input_coding('jis') },
+GetOptions ("ascii|a"          => sub { set_input_coding('binary') },
+	    "shift-jis|s"      => sub { set_input_coding('shiftjis') },
+	    "euc-jp|ujis|e"    => sub { set_input_coding('eucjp') },
+	    "utf-8|u"          => sub { set_input_coding('utf8') },
+	    "iso-2022-jp|jis|junet|j"
+	                       => sub { set_input_coding('jis') },
 	    "input-coding|i=s" => \&set_input_coding,
-	    "output-coding=s" => \$outcode,
-	    "list-coding" => \&list_input_coding,
-	    "decorate|d!" => \$decorate,
-	    "plaintext|p" => sub { $decorate = 0 },
-	    "char|c:1"    => \$charbased,
-	    "text|t"      => \$textbased,
-	    "charwidth=i" => \$widthmethod,
-	    "reset-status!" => \$reset_2022_status, # use with --no-reset-status
-	    "help|h|?"    => sub { &usage() },
+	    "output-coding=s"  => \$outcode,
+	    "list-coding"      => \&list_input_coding,
+	    "decorate|d!"      => \$decorate,
+	    "plaintext|p"      => sub { $decorate = 0 },
+	    "char|c:1"         => \$charbased,
+	    "text|t"           => \$textbased,
+	    "charwidth=i"      => \$widthmethod,
+	    "reset-status!"    => \$reset_2022_status, # --no-reset-status
+	    "help|h|?"         => sub { &usage() },
 	    "use-control-pictures:1" => \$use_control_pictures,
-	   ) or usage();
+	   ) or usage('');
 
 usage("-c and -t cannot be used together") if $charbased && $textbased;
 
 sub usage {
     require FindBin;
-    print "Error: $_[0]\n" if defined $_[0];
+    my $ret = 1;
 
-    printf <<'EOS', $FindBin::Script;
+    local *OUTPUT;
+
+    if (defined $_[0]) {
+	*OUTPUT = *STDERR;
+	print OUTPUT "Error: $_[0]\n\n" if $_[0] ne '';
+    } else {
+	*OUTPUT = *STDOUT;
+	$ret = 0;
+    }
+    printf OUTPUT <<'EOS', $FindBin::Script;
 Usage: %s [options] [--] [input file]
 
 Options:
@@ -132,7 +157,7 @@ Options:
   --euc-jp      -e  : input is EUC-JP
   --utf-8       -u  : input is UTF-8
   --iso-2022-jp -j  : input is ISO-2022-JP (also --jis, --junet)
-                      (default : to guess from above four candidates)
+                      (default : to guess)
 
   --input-coding=<coding> -i : set input coding
   --list-coding              : show the list of accepted input codings
@@ -149,7 +174,7 @@ Options:
                       (default: use locale settings (also when n = 0))
   --help        -h  : show this help
 EOS
-    exit 1;
+    exit $ret;
 }
 
 sub list_input_coding {
@@ -258,7 +283,7 @@ exit 0;
 ### input coding parameter handlings
 
 sub set_input_coding {
-    my $coding = $_[-1];
+    my $coding = $_[-1]; # called both from internally and from GetOptions
 
     if ($coding =~ /\A([iI][sS][oO]-?2022)?\((.+)\)\z/) {
 	$incode = 'iso2022';
@@ -268,7 +293,10 @@ sub set_input_coding {
     my $c = lc $coding;
     $c =~ s/[_-]//g;
     $c = $coding_aliases{$c} if exists $coding_aliases{$c};
-    usage("unknown coding: $coding ($c)") unless exists $codings{$c};
+    unless (exists $codings{$c}) {
+	usage("unknown coding: $coding ($c)" .
+	      (@_ == 2 ? "\n  (try --list-coding for accepted values)" : ""));
+    }
     $incode = $c;
 }
 
@@ -281,7 +309,7 @@ sub detect_coding {
     given ($_[0]) {
 	when (m#\e\$?[\$(-/][A-~\@]
 		[\x0e\x0f\x1b\x20-\x7e\x8e\x8f\xa0-\xff]+
-		(?:\e\([ABGHJ-LRTY`afghiwx\@]|\n)#sx) {
+		(?:\e\([ABGHJ-LRTY\`afghiwx\@]|\n)#sx) {
 	    if (m|\e%G| && m|\e%@|) {
 		'ISO-2022-U'
 	    } else {
@@ -388,6 +416,7 @@ sub uline_decorate {
 
     sub put_normal {
 	my ($s, $n) = @_;
+	my $o = $s;
 	if ($curdecorate != 0) {
 	    $chrbuf .= "\e[0m";
 	    $curdecorate = 0;
@@ -400,7 +429,7 @@ sub uline_decorate {
 	    $chrforward = 1;
 	} elsif ($width == 0) {
 	    $chrforward = 0;
-	    $s = " $s";
+	    $o = " $o";
 	} else {
 	    $chrforward = 0;
 	}
@@ -409,14 +438,14 @@ sub uline_decorate {
 	    return;
 	}
 	if ($s =~ /\p{Bidi_class: R}/ && !$textbased) {
-	    $s = "\x{202d}$s\x{2069}"; # force LTR direction in char dump.
+	    $o = "\x{202d}$o\x{2069}"; # force LTR direction in char dump.
 	}
 	$chreaten = $n - 1;
 	if ($charbased) {
-	    $chrbuf .= $s . (" " x (2-$chrforward));
+	    $chrbuf .= $o . (" " x (2 - $chrforward));
 	    $chrforward = 0;
 	} else {
-	    $chrbuf .= $s;
+	    $chrbuf .= $o;
 	}
 	$chrforward = $chareaten if $charforward > $chareaten;
 	# output wider than available:
@@ -429,21 +458,40 @@ sub uline_decorate {
 
 sub set_output_coding ($) {
     my ($coding) = @_;
+    my ($locale_coding, $l);
 
-    if ($coding eq 'detect') {
-	# use open IO => ':locale' has a side effect.
-	eval {
-	    use I18N::Langinfo ();
-	    $coding = I18N::Langinfo::langinfo (I18N::Langinfo::CODESET());
-	};
-	if ($@ || !$coding) {
-	    warn "langinfo() does not return coding system.";
-	    $coding = "utf8";
+    # determine locale encoding
+    eval {
+	use I18N::Langinfo ();
+	$l = $locale_coding = I18N::Langinfo::langinfo (I18N::Langinfo::CODESET());
+    };
+    if ($@ || !$coding) {
+	warn "langinfo() does not return coding system.";
+	debug 4, "LOCALE ENCODING: --\n";
+	$locale_coding = undef;
+	$enc_locale = undef;
+    } else {
+	if ($enc_locale = find_encoding($locale_coding)) {
+	    $locale_coding = $enc_locale->name();
+	    debug 4, "LOCALE ENCODING: %s (%s)\n", $locale_coding, $l;
+	} else {
+	    warn "Encoding of locale ($l) is not available\n";
+	    $locale_coding = undef;
+	    $enc_locale = undef;
+	    debug 4, "LOCALE ENCODING: -- (%s)\n", $l;
 	}
     }
-    $outenc = find_encoding($coding) // die "output: cannot find coding $coding";
-    
-    $coding = $outenc->name(); # canonify for possible coding-dependent tweaks
+
+    if ($coding ne 'detect') {
+	$outenc = find_encoding($coding) // die "Error: cannot find output coding $coding\n";
+	$coding = $outenc->name(); # canonify for possible coding-dependent tweaks
+    } elsif ($locale_coding) {
+	$outenc = $enc_locale;
+	$coding = $locale_coding;
+    } else {
+	$outenc = $enc_U8;
+	$coding = "UTF-8";
+    }
 
     if ($coding =~ /\Autf-8\z/i) {
 	binmode (STDOUT, ":utf8");
@@ -451,8 +499,9 @@ sub set_output_coding ($) {
     } else {
 	binmode (STDOUT, ":encoding($coding)") // return undef;
 	$output_utf8 = 0;
-	return 1;
     }
+    #print "OUTPUT ENCODING: $coding\n";
+    return;
 }
 
 ### input processing: general
@@ -558,7 +607,7 @@ sub process_GR_8859_1 {
 ### input processing: wide char supports
 
 {
-    use Text::CharWidth;
+    my $charwidth_available = undef;
 
     my $chrattr_cache = "";
     # 0x80 -> checked
@@ -577,29 +626,50 @@ sub process_GR_8859_1 {
 	}
 	$r = 0x80; # checked
 
+	if (!defined $charwidth_available) {
+	    if (!$enc_locale) {
+		$charwidth_available = 0;
+	    } else {
+		eval {
+		    require Text::CharWidth;
+		};
+		$charwidth_available = ! $@;
+	    }
+	}
+
 	my $printable = ($char =~ /^\p{Print}$/);
 	$r |= 0x40 if $printable;
-	
+
 	my $skip_classcheck = 0;
-	
-	if ($widthmethod == 0) {
-	    my $v = Text::CharWidth::mbwidth($char);
+
+	if ($widthmethod == 0 && $charwidth_available) {
+	    debug(4, "DEBUG: trying charwidth for U+%04x\n", $code);
+	    my $cc = "$char";
+	    my $s = $enc_locale->encode($cc, FB_QUIET);
+	    my $v = -1;
+	    if ($cc eq '' && length($s) >= 1) {
+		$v = Text::CharWidth::mbwidth($s);
+		debug(4, "DEBUG: calling charwidth for %s -> %d\n", unpack("H*",$s), $v);
+	    } else {
+		debug(4, "DEBUG: U+%04x does not encode: skipping\n", $code);
+	    }		
 	    if ($v >= 0 && $v < 4) {
 		$r |= (0x20 | $v);
 		$skip_classcheck = 1;
 	    }
 	}
 	unless ($skip_classcheck) {
-	    $r |= 0x20 if ($widthmethod != 0) && ($r & 0x40 != 0);
-	    
-	    if (/\p{Block: Combining_Diacritical_Marks}
+	    $r |= 0x20 if ($widthmethod != 0 || !$charwidth_available) && ($r & 0x40 != 0);
+
+	    if ($char =~ /\p{Block: Combining_Diacritical_Marks}
 	     |\p{Block: Combining_Diacritical_Marks_For_Symbols}
 	     |\p{Block: Combining_Half_Marks}
 	     |\p{Block: Combining_Marks_For_Symbols}
 	     |\p{Block: Combining_Diacritical_Marks_For_Symbols}/x) {
-	    } elsif (/\p{Ea: W}|\p{Ea: F}/) {
+		$r |= 0;
+	    } elsif ($char =~ /\p{Ea: W}|\p{Ea: F}/) {
 		$r |= 2;
-	    } elsif ($widthmethod >= 2 && /\p{Ea: A}/) {
+	    } elsif ($widthmethod >= 2 && $char =~ /\p{Ea: A}/) {
 		$r |= 2;
 	    } else {
 		$r |= 1;
@@ -609,15 +679,15 @@ sub process_GR_8859_1 {
 	    $r |= 0x10 if $printable && ($r & 0x20 != 0);
 	} else {
 	    my $s = $char;
-	    my $t = $outenc->encode($s, Encode::FB_QUIET);
+	    my $t = $outenc->encode($s, FB_QUIET);
 	    $r |= 0x10 if $printable && $s eq '' && length($t) >= 1;
-#	    printf("check U+%04X -> %d %d %d\n", $code, $printable, $s eq '', length($t) >= 1);
+	    debug(4, "check U+%04X -> %d %d %d\n", $code, $printable, $s eq '', length($t) >= 1);
 	}
 
 	if ($code < 0x10000) {
 	    vec($chrattr_cache, $code, 8) = $r;
 	}
-	#printf "DEBUG: checked code U+%x -> %b\n", $code, $r;
+	debug(4, "DEBUG: checked code U+%x -> %b\n", $code, $r);
 	return $r;
     }
 }
@@ -625,11 +695,11 @@ sub process_GR_8859_1 {
 sub wcwidth {
     return 0 if $_[0] eq "";
     return 1 if ord($_[0]) < 0x80;
-    return check_char_attr($_[0]) & 3;
+    return (check_char_attr($_[0]) & 3);
 }
 
 sub is_printable_to_terminal {
-    return (check_char_attr($_[0]) & 0x50) == 0x50;
+    return ((check_char_attr($_[0]) & 0x50) == 0x50);
 }
 
 my $fw_fill_char;
@@ -785,29 +855,29 @@ sub process_GR_UTF8 {
 	# we use EUC-encoded tables here.
 	
 	%I646table = 
-      ('@' => q(#¤@[\]^_`{|}~), # 4/0  IRV old
-       'A' => q(£$@[\]^_`{|}~), # 4/1  UK
-       'B' => q(#$@[\]^_`{|}~), # 4/2  US-ASCII
-       'G' => q(#¤@ÄÖÅ^_`äöå~), # 4/7  SE-B
-       'H' => q(#¤ÉÄÖÅÜ_éäöåü), # 4/8  SE-C
-       'J' => q(#$@[¥]^_`{|}~), # 4/10 JP
-       'K' => q(#$§ÄÖÜ^_`ÄÖÜß), # 4/11 DE
-       'L' => q(#¤§ÃÇÕ^_`ãçõ°), # 4/12 PT-o
-       'R' => q(#£à°ç§^_µéùè¨), # 5/2  FR old
-       'T' => q(#¥@[\]^_`{|}~), # 5/4  CN
-       'Y' => q(#£§°çé^_ùàòèì), # 5/9  IT
-       '`' => q(#$@ÆØÅ^_`ÆØÅ~), # 6/0  NO
-       'a' => q(#§@ÆØÅ^_`ÆØÅ|), # 6/1  NO-2 old
-       'f' => q(#£à°ç§^_µéùè¨), # 6/6  FR
-       'g' => q(#¤´ÃÇÕ^_`ãçõ~), # 6/7  PT-i
-       'h' => q(#$·¡ÑÇ¿_`´ñç¨), # 6/8  ES
-       'i' => q(#¤ÁÉÖÜ^_áéöü˝), # 6/9  HU
-       'w' => q(#$àâçêî_ôéùèû), # 7/7  CA1
-       'x' => q(#$àâçêÉ_ôéùèû), # 7/8  CA2
-       'z' => q(#$ŽŠĐĆČ_žšđćč), # 7/10 YU
-       '!A'=> q(#¤@¡Ñ]¿_`´ñ[¨), # 2/1 4/1  CU
-       '!C'=> q(£¤ÓÉÍÚÁ_óéíúá), # 2/1 4/3  IE
-       );
+          ('@' => \"\#\N{U+a4}\@\[\\\]\^_\`\{\|\}\~", # 4/0  IRV old
+           'A' => \"\N{U+a3}\$\@\[\\\]\^_\`\{\|\}\~", # 4/1  UK
+           'B' => \"\#\$\@\[\\\]\^_\`\{\|\}\~", # 4/2  US-ASCII
+           'G' => \"\#\N{U+a4}\@\N{U+c4}\N{U+d6}\N{U+c5}\^_\`\N{U+e4}\N{U+f6}\N{U+e5}\~", # 4/7  SE-B
+           'H' => \"\#\N{U+a4}\N{U+c9}\N{U+c4}\N{U+d6}\N{U+c5}\N{U+dc}_\N{U+e9}\N{U+e4}\N{U+f6}\N{U+e5}\N{U+fc}", # 4/8  SE-C
+           'J' => \"\#\$\@\[\N{U+a5}\]\^_\`\{\|\}\~", # 4/10 JP
+           'K' => \"\#\$\N{U+a7}\N{U+c4}\N{U+d6}\N{U+dc}\^_\`\N{U+c4}\N{U+d6}\N{U+dc}\N{U+df}", # 4/11 DE
+           'L' => \"\#\N{U+a4}\N{U+a7}\N{U+c3}\N{U+c7}\N{U+d5}\^_\`\N{U+e3}\N{U+e7}\N{U+f5}\N{U+b0}", # 4/12 PT-o
+           'R' => \"\#\N{U+a3}\N{U+e0}\N{U+b0}\N{U+e7}\N{U+a7}\^_\N{U+b5}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+a8}", # 5/2  FR old
+           'T' => \"\#\N{U+a5}\@\[\\\]\^_\`\{\|\}\~", # 5/4  CN
+           'Y' => \"\#\N{U+a3}\N{U+a7}\N{U+b0}\N{U+e7}\N{U+e9}\^_\N{U+f9}\N{U+e0}\N{U+f2}\N{U+e8}\N{U+ec}", # 5/9  IT
+           '`' => \"\#\$\@\N{U+c6}\N{U+d8}\N{U+c5}\^_\`\N{U+c6}\N{U+d8}\N{U+c5}\~", # 6/0  NO
+           'a' => \"\#\N{U+a7}\@\N{U+c6}\N{U+d8}\N{U+c5}\^_\`\N{U+c6}\N{U+d8}\N{U+c5}\|", # 6/1  NO-2 old
+           'f' => \"\#\N{U+a3}\N{U+e0}\N{U+b0}\N{U+e7}\N{U+a7}\^_\N{U+b5}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+a8}", # 6/6  FR
+           'g' => \"\#\N{U+a4}\N{U+b4}\N{U+c3}\N{U+c7}\N{U+d5}\^_\`\N{U+e3}\N{U+e7}\N{U+f5}\~", # 6/7  PT-i
+           'h' => \"\#\$\N{U+b7}\N{U+a1}\N{U+d1}\N{U+c7}\N{U+bf}_\`\N{U+b4}\N{U+f1}\N{U+e7}\N{U+a8}", # 6/8  ES
+           'i' => \"\#\N{U+a4}\N{U+c1}\N{U+c9}\N{U+d6}\N{U+dc}\^_\N{U+e1}\N{U+e9}\N{U+f6}\N{U+fc}\N{U+2dd}", # 6/9  HU
+           'w' => \"\#\$\N{U+e0}\N{U+e2}\N{U+e7}\N{U+ea}\N{U+ee}_\N{U+f4}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+fb}", # 7/7  CA1
+           'x' => \"\#\$\N{U+e0}\N{U+e2}\N{U+e7}\N{U+ea}\N{U+c9}_\N{U+f4}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+fb}", # 7/8  CA2
+           'z' => \"\#\$\N{U+17d}\N{U+160}\N{U+110}\N{U+106}\N{U+10c}_\N{U+17e}\N{U+161}\N{U+111}\N{U+107}\N{U+10d}", # 7/10 YU
+           '!A'=> \"\#\N{U+a4}\@\N{U+a1}\N{U+d1}\]\N{U+bf}_\`\N{U+b4}\N{U+f1}\[\N{U+a8}", # 2/1 4/1  CU
+           '!C'=> \"\N{U+a3}\N{U+a4}\N{U+d3}\N{U+c9}\N{U+cd}\N{U+da}\N{U+c1}_\N{U+f3}\N{U+e9}\N{U+ed}\N{U+fa}\N{U+e1}", # 2/1 4/3  IE
+	  );
     }
 
     sub process_init_2022 {
@@ -919,15 +989,9 @@ sub process_GR_UTF8 {
 		    process_GL_ASCII($ofs, 0x20);
 		} elsif ($c >= 0x21 && $c <= 0x5f) {
 		    my $s = $enc_SJ->decode(chr(0x80 | $c));
-    #		printf "JIS_KANA: decode result is %s\n", join(".", unpack("U*", $s));
-    #		$chrbuf .= sprintf("[JK[");
 		    put_normal($s, 1);
-    #		$chrbuf .= sprintf("]]");
 		} else {
-    #		printf "JIS_KANA: out-of-bounds (%02x)\n", $c;
-    #		$chrbuf .= sprintf("[JKO[");
 		    put_decorate(".");
-    #		$chrbuf .= sprintf("]]");
 		}
 	    }
 	    when (['$B', '$@']) {
@@ -1079,7 +1143,7 @@ sub process_GR_UTF8 {
 			    $chreaten = 2; $chrforward = 0;
 			    # switch to UTF (with special return)
 			    ($process_GL, $process_GR, $process_C0) = 
-			      (\&process_GL_ASCII,  \&process_GR_UTF8, \&process_C0_UTF8_in_2022);
+			      (\&process_GL_ASCII, \&process_GR_UTF8, \&process_C0_UTF8_in_2022);
 			    return;
 			} elsif ($codeA == 0x40) {
 			    # ISO-2022 calling: no-op
@@ -1248,7 +1312,7 @@ sub get ($) {
 	my $s;
 	my $n = read(IN, $s, BUFSIZE);
 	if (!defined $n) {
-	    die "read error: $!";
+	    die "Error: read error: $!\n";
 	} else {
 	    $buf .= $s;
 	}
