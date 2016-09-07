@@ -256,6 +256,7 @@ my ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
 
 &$process_init(@process_init_args) if defined $process_init;
 
+die "Write failed: $!" if STDOUT->error;
 while (1) {
     my $o;
     $binbuf = "";
@@ -275,15 +276,21 @@ while (1) {
     }
     put_normal("", 0) unless $textbased;
     if ($textbased) {
-	print $chrbuf;
+	print $chrbuf                                       or last;
     } else {
-	printf "%08x:%s  %s\n", $addr, $binbuf, $chrbuf;
+	printf "%08x:%s  %s\n", $addr, $binbuf, $chrbuf     or last;
     }
     $chrforward = 0;
     last if $o != 16;
     $addr += 16;
 }
+die "Write failed: $!" if STDOUT->error;
+
+$chrbuf = "";
 put_normal("", 0); # if $textbased
+print "$chrbuf";
+
+close STDOUT or die "Write failed: $!"; # catch any errors
 exit 0;
 
 ### input coding parameter handlings
