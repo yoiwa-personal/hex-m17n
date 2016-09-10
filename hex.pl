@@ -1,7 +1,8 @@
 #!/usr/bin/perl -C0
 # -*- coding: utf-8 -*-
-# hexja.pl version 0.20 - hexadecimal dump tool for Japanese and other codings
+# hexja.pl version 0.30 - hexadecimal dump tool for Japanese and other codings
 # (c) 2016 Yutaka OIWA.
+# $Id$
 
 use Encode qw(:default FB_QUIET);
 use utf8;
@@ -19,22 +20,27 @@ my $dlevel = $ENV{HEXDEBUG} + 0;
 sub debug ();
 
 BEGIN {
-    if (exists($ENV{HEXDEBUG}) or scalar(grep{ m/^--debug(?:=\d+)?$/ } @ARGV)) {
+    if (exists($ENV{HEXDEBUG}) or scalar(grep{ m/^--debug(?:=.+)?$/ } @ARGV)) {
 	*debug = sub () { $dlevel };
     } else {
         *debug = sub () { 0 };
     }
     # usage: debug&n&& printf(...);
     # allocation of the bit flag <n>:
+    #   2: encoding loading
     #   4: locale
     #   8: charwidth
+
+    # Without HEXDEBUG or --debug, the whole debugging code will be optimized out.
 }
 
 our $enc_SJ = find_encoding("Shift_JIS") // die;
 our $enc_932 = find_encoding("CP932") // die;
 our $enc_EJ = find_encoding("EUC-JP") // die;
 our $enc_U8 = find_encoding("UTF8") // die;
-our $enc_locale;
+
+our ($enc_locale, $locale_coding);
+our ($cjk_region);
 
 use constant { BUFSIZE => 1024 };
 use Getopt::Long qw(:config bundling require_order);
@@ -78,11 +84,11 @@ our %codings =
     'utf8'      => [ "UTF-8 encoding of ISO 10646-1",
 		     \&process_GL_ASCII,  \&process_GR_UTF8,   \&process_C0_ASCII ],
 
-    'iso2022'     => [ "ISO 2022 (neutral: GR default to ISO 8859-1)",
-		     qw(2022: B ,A) ],
+    'iso2022'     => [ "ISO 2022 (neutral: useful for -KR, -CN as well)",
+		     qw(2022: B) ],
     'iso2022u'     => [ "ISO 2022 with transition to UTF-8",
-		     qw(2022: :utf_ok B ,A) ],
-    'iso2022jp' => [ "ISO-2022-JP (other ISO-2022-KR, CN is also accepted)",
+		     qw(2022: :utf_ok :noreset B ,A) ],
+    'iso2022jp' => [ "ISO-2022-JP (GR is JIS x0201 Kana)",
 		     qw(2022: B I) ],
     'japaneseiso8' => [ "EUC-JP with ISO-2022 handling", qw(2022: B $B I $D) ],
     'iso88592' => [ "ISO 8859-2 (Latin-2)", qw(2022: :fixed B ,B) ],
@@ -102,9 +108,10 @@ our %codings =
 		  qw(2022: :fixed B $A) ],              # (mb: euc-cn a1-fe a1-fe)
     'euckr' => [ "EUC-KR (South Korean, KS X 1001)",
 		  qw(2022: :fixed B $C) ],
-
     'big5' => [ "Big-5 (Taiwan - ROC)",
 		qw(mb: big5 a1-c6,c9-f9 40-7e,a1-fe) ],
+    'euctw' => [ "EUC-TW (Taiwan -ROC, CNS-11643)",
+		 \&process_GL_ASCII,  \&process_GR_EucTW, \&process_C0_ASCII, \&process_init_eucTW ],
 
     'detect'    => [ "Automatic detection" ],
   );
@@ -115,7 +122,9 @@ our %coding_aliases =
     'jis'   => 'iso2022jp',
     'ujis'  => 'eucjp',
     'sjis'  => 'shiftjis',
-    'guess' => 'detect' );
+    'guess' => 'detect',
+    'gb2312' => 'euc-cn',
+  );
 
 GetOptions ("ascii|a"          => sub { set_input_coding('binary') },
 	    "shift-jis|s"      => sub { set_input_coding('shiftjis') },
@@ -131,9 +140,11 @@ GetOptions ("ascii|a"          => sub { set_input_coding('binary') },
 	    "char|c:1"         => \$charbased,
 	    "text|t"           => \$textbased,
 	    "charwidth=i"      => \$widthmethod,
-	    "reset-status!"    => \$reset_2022_status, # --no-reset-status
+	    "reset-status=i"   => \$reset_2022_status,
+	    "no-reset-status"  => sub { $reset_2022_status = 0 },
 	    "help|h|?"         => sub { &usage() },
 	    "use-control-pictures:1" => \$use_control_pictures,
+	    "cjk-region=s"     => \$cjk_region,
 	    "debug=i"          => \$dlevel,
 	   ) or usage('');
 
@@ -232,7 +243,7 @@ my ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
 	    read(IN, $buf, BUFSIZE * 8) // die "read error: $!"; # 0 is OK, undef is error
 
 	    my $inc = detect_coding($buf);
-	    printf "# Detected coding: %s\n", $inc if (($buf ne '') && (!$textbased));
+	    printf "# Detected coding: %s\n", $inc if (($buf ne '') && (!$textbased || !!($dlevel & 4)));
 	    set_input_coding($inc);
 	}
 	@a = @{$codings{$incode}};
@@ -330,7 +341,20 @@ sub detect_coding {
 	}
 	when (/\A(?:[\x00-\x7f])*\z/sx) {
 	    'ASCII'
-	      # internally "OK" with EUC-JP below, but for displaying
+	      # internally "OK" with EUC-* below, but for better displaying
+	}
+	when ($cjk_region ~~ ['KR','CN'] &&
+	      /\A(?:[\x00-\x7f]
+	       |[\xa1-\xfe][\xa1-\xfe]
+	       )*.?\z/sx) {
+	    "EUC-$cjk_region"
+	}
+	when ($cjk_region eq 'TW' &&
+	      /\A(?:[\x00-\x7f]
+	       |[\xa1-\xfe][\xa1-\xfe]
+	       |\x8e[\xa2-\xaf][\xa1-\xfe][\xa1-\xfe]
+	       )*.{0-3}\z/sx) {
+	    'EUC-TW'
 	}
 	when (/\A(?:[\x00-\x7f]
 	       |\x8e[\xa1-\xdf]
@@ -348,10 +372,19 @@ sub detect_coding {
 	       )*.{0,5}\z/sx) {
 	    'UTF-8';
 	}
+	when ($cjk_region eq 'TW' &&
+	      /\A(?:[\x00-\x7f\xa1-\xdf]
+	       |[\xa1-\xc6\xc9-\xf9][\x40-\x7e\xa1-\xfe]
+	       )*.?\z/sx) {
+	    'big5';
+	}
 	when (/\A(?:[\x00-\x7f\xa1-\xdf]
 	       |[\x80-\x9f\xe0-\xef][\x40-\x7e\x80-\xfd]
 	       )*.?\z/sx) {
-	    'Shift_JIS'; # SJIS
+	    'Shift_JIS';
+	}
+	when (/\A[\x00-\x7f\xa0-\xff]+\z/sx) {
+	    'ISO-8859-1';
 	}
 	default {
 	    'binary'; # unknown : assume binary (ASCII)
@@ -470,33 +503,41 @@ sub uline_decorate {
 
 {
     my $inited = 0;
-    my $locale_coding = undef;
 
     sub determine_locale_encoding () {
 	if (!$inited) {
 	    $enc_locale = undef;
-
-	    if ($^O eq 'MSWin32') {
-		require Win32;
-		my $CP = Win32::GetConsoleOutputCP();
-		$locale_coding = "cp$CP";
-	    } else {
+	    $locale_coding = undef;
+	    my $err = "";
+	    {
+		my $l = undef;
 		eval {
 		    require I18N::Langinfo;
-		    $locale_coding = I18N::Langinfo::langinfo (I18N::Langinfo::CODESET());
+		    $l = I18N::Langinfo::langinfo (I18N::Langinfo::CODESET());
 		};
-		if ($@ || !$locale_coding) {
-		    warn "langinfo() does not return coding system.";
-		    debug&4 and printf "LOCALE ENCODING: --\n";
-		    $locale_coding = undef;
+		if ($@ || !$l) {
+		    $err = "langinfo() does not return coding system.";
+		} else {
+		    $locale_coding = $l;
 		}
 	    }
-	    if (defined $locale_coding) {
+	    if (!$locale_coding && $^O eq 'MSWin32') {
+		require Win32;
+		my $CP = Win32::GetConsoleOutputCP();
+		if ($CP) {
+		    $locale_coding = "cp$CP";
+		} else {
+		    $err = "Console codepage cannot be acquired";
+		}
+	    }
+	    if ($locale_coding) {
 		my $l = $locale_coding;
 		if ($enc_locale = find_encoding($locale_coding)) {
 		    $locale_coding = $enc_locale->name();
 		    $locale_coding = 'utf-8' if $locale_coding == 'utf-8-strict';
 		    debug&4 and printf "LOCALE ENCODING: %s (%s)\n", $locale_coding, $l;
+		    detemine_cjk_region($locale_coding);
+		    debug&4 and printf "LOCALE ENCODING: %s (%s), REGION %s\n", $locale_coding, $l, $cjk_region;
 		} else {
 		    warn "Encoding of locale ($l) is not available\n";
 		    $locale_coding = undef;
@@ -504,11 +545,39 @@ sub uline_decorate {
 		    debug&4 and printf "LOCALE ENCODING: -- (%s)\n", $l;
 		}
 	    } else {
+		warn $err;
 		debug&4 and printf "LOCALE ENCODING: --\n";
 	    }
 	    $inited = 1;
 	}
 	return ($enc_locale, $locale_coding);
+    }
+
+    sub detemine_cjk_region {
+	return $cjk_region if $cjk_region;
+
+	my $encname = $_[0];
+	my $locale = $ENV{LC_CTYPE} || $ENV{LC_ALL} || $ENV{LANG} || '-';
+
+	$cjk_region = do { given ("$encname\0$locale") {
+	    when (m@^euc-jp\0|^cp932\0|^shiftjis\0|\0ja(_.*)$@si) {
+		"JP";
+	    }
+	    when (m@^euc-kr\0|^cp949\0|\0ko(_.*)$@si) {
+		"KR";
+	    }
+	    when (m@^euc-cn\0|^cp936\0|\0zh_cn(\..*)$|\0zh_hk(\..*)$@si) {
+		"CN";
+	    }
+	    when (m@^euc-tw\0|^big5\0|^cp950\0|\0zh_TW(\..*)$@si) {
+		"TW";
+	    }
+	    default {
+		"-";
+	    }
+	}};
+
+	return $cjk_region;
     }
 }
 
@@ -748,6 +817,14 @@ sub is_printable_to_terminal {
 
 my $fw_fill_char;
 
+sub put_invalid_fullwidth {
+    my ($n) = @_;
+    if (!$fw_fill_char) {
+	$fw_fill_char = is_printable_to_terminal("\x{3013}") ? "\x{3013}" : "..";
+    }
+    put_decorate($fw_fill_char . (" " x ($n - 2)), "." x $n, $n);
+}
+
 sub put_maybe_fullwidth {
     # Filters output of "decode", assuming input is "full-width".
     # 2+ chars (decode may produce 2+ characters for "bad" inputs),
@@ -755,10 +832,7 @@ sub put_maybe_fullwidth {
     # output-dependent unprintable characters.
     my ($s, $n) = @_;
     if (length $s > 1 || substr($s, 0, 1) eq "\x{fffd}") {
-	if (!$fw_fill_char) {
-	    $fw_fill_char = is_printable_to_terminal("\x{3013}") ? "\x{3013}" : "..";
-	}
-	put_decorate($fw_fill_char . (" " x ($n - 2)), "." x $n, $n);
+	put_invalid_fullwidth($n);
     } else {
 	put_normal($s, $n);
     }
@@ -859,8 +933,8 @@ sub process_GR_UTF8 {
 
 {
     my %encode_cache;
+    my $broken_euc_tw;
     my %I646table;
-
 
     my @GLR_init;
     my @G_init;
@@ -869,60 +943,6 @@ sub process_GR_UTF8 {
 
     my $SS;
     my ($allow_LS, $allow_SS, $allow_designate, $allow_UTF);
-
-    BEGIN {
-	%encode_cache = ( '$A' => 'GB2312',
-			  '$B' => 'EUC-JP',     # not used: directly implemented
-			  '$C' => 'EUC-KR',
-			  # '$G' => 'EUC-TW', # only Big5 is included in pure Perl distribution
-			  ',A' => 'ISO-8859-1', # not used: directly implemented
-			  ',B' => 'ISO-8859-2',
-			  ',C' => 'ISO-8859-3',
-			  ',D' => 'ISO-8859-4',
-			  ',F' => 'ISO-8859-7',
-			  ',G' => 'ISO-8859-6',
-			  ',H' => 'ISO-8859-8',
-			  ',L' => 'ISO-8859-5',
-			  ',M' => 'ISO-8859-9',
-			  ',T' => 'ISO-8859-11',
-			  ',V' => 'ISO-8859-10',
-			  ',Y' => 'ISO-8859-13',
-			  ',_' => 'ISO-8859-14',
-			  ',b' => 'ISO-8859-15',
-			  ',f' => 'ISO-8859-16',
-			);
-	# Note: Technically, $B corresponds to jisx0208-raw, $C to KSC5601-raw, etc.
-	# We need to use FULLWIDTH variants for ASCII-conflicting characters, and
-	# current Perl implementation of *-raw encodings _actually_ does that,
-	# against the mapping definitions of Unicode Consortium.
-	# However, to make this doubly-sure for any future,
-	# we use EUC-encoded tables here.
-
-	%I646table = 
-          ('@' => "\#\N{U+a4}\@\[\\\]\^_\`\{\|\}\~", # 4/0  IRV old
-           'A' => "\N{U+a3}\$\@\[\\\]\^_\`\{\|\}\~", # 4/1  UK
-           'B' => "\#\$\@\[\\\]\^_\`\{\|\}\~", # 4/2  US-ASCII
-           'G' => "\#\N{U+a4}\@\N{U+c4}\N{U+d6}\N{U+c5}\^_\`\N{U+e4}\N{U+f6}\N{U+e5}\~", # 4/7  SE-B
-           'H' => "\#\N{U+a4}\N{U+c9}\N{U+c4}\N{U+d6}\N{U+c5}\N{U+dc}_\N{U+e9}\N{U+e4}\N{U+f6}\N{U+e5}\N{U+fc}", # 4/8  SE-C
-           'J' => "\#\$\@\[\N{U+a5}\]\^_\`\{\|\}\~", # 4/10 JP
-           'K' => "\#\$\N{U+a7}\N{U+c4}\N{U+d6}\N{U+dc}\^_\`\N{U+c4}\N{U+d6}\N{U+dc}\N{U+df}", # 4/11 DE
-           'L' => "\#\N{U+a4}\N{U+a7}\N{U+c3}\N{U+c7}\N{U+d5}\^_\`\N{U+e3}\N{U+e7}\N{U+f5}\N{U+b0}", # 4/12 PT-o
-           'R' => "\#\N{U+a3}\N{U+e0}\N{U+b0}\N{U+e7}\N{U+a7}\^_\N{U+b5}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+a8}", # 5/2  FR old
-           'T' => "\#\N{U+a5}\@\[\\\]\^_\`\{\|\}\~", # 5/4  CN
-           'Y' => "\#\N{U+a3}\N{U+a7}\N{U+b0}\N{U+e7}\N{U+e9}\^_\N{U+f9}\N{U+e0}\N{U+f2}\N{U+e8}\N{U+ec}", # 5/9  IT
-           '`' => "\#\$\@\N{U+c6}\N{U+d8}\N{U+c5}\^_\`\N{U+c6}\N{U+d8}\N{U+c5}\~", # 6/0  NO
-           'a' => "\#\N{U+a7}\@\N{U+c6}\N{U+d8}\N{U+c5}\^_\`\N{U+c6}\N{U+d8}\N{U+c5}\|", # 6/1  NO-2 old
-           'f' => "\#\N{U+a3}\N{U+e0}\N{U+b0}\N{U+e7}\N{U+a7}\^_\N{U+b5}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+a8}", # 6/6  FR
-           'g' => "\#\N{U+a4}\N{U+b4}\N{U+c3}\N{U+c7}\N{U+d5}\^_\`\N{U+e3}\N{U+e7}\N{U+f5}\~", # 6/7  PT-i
-           'h' => "\#\$\N{U+b7}\N{U+a1}\N{U+d1}\N{U+c7}\N{U+bf}_\`\N{U+b4}\N{U+f1}\N{U+e7}\N{U+a8}", # 6/8  ES
-           'i' => "\#\N{U+a4}\N{U+c1}\N{U+c9}\N{U+d6}\N{U+dc}\^_\N{U+e1}\N{U+e9}\N{U+f6}\N{U+fc}\N{U+2dd}", # 6/9  HU
-           'w' => "\#\$\N{U+e0}\N{U+e2}\N{U+e7}\N{U+ea}\N{U+ee}_\N{U+f4}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+fb}", # 7/7  CA1
-           'x' => "\#\$\N{U+e0}\N{U+e2}\N{U+e7}\N{U+ea}\N{U+c9}_\N{U+f4}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+fb}", # 7/8  CA2
-           'z' => "\#\$\N{U+17d}\N{U+160}\N{U+110}\N{U+106}\N{U+10c}_\N{U+17e}\N{U+161}\N{U+111}\N{U+107}\N{U+10d}", # 7/10 YU
-           '!A'=> "\#\N{U+a4}\@\N{U+a1}\N{U+d1}\]\N{U+bf}_\`\N{U+b4}\N{U+f1}\[\N{U+a8}", # 2/1 4/1  CU
-           '!C'=> "\N{U+a3}\N{U+a4}\N{U+d3}\N{U+c9}\N{U+cd}\N{U+da}\N{U+c1}_\N{U+f3}\N{U+e9}\N{U+ed}\N{U+fa}\N{U+e1}", # 2/1 4/3  IE
-	  );
-    }
 
     sub process_init_2022 {
 	my @p = @_;
@@ -972,6 +992,9 @@ sub process_GR_UTF8 {
 	    my $g = $p[$_];
 	    last unless defined $g;
 	    die "Error: bad ISO2022 specifier for G$_: $g\n" unless $g =~ /^[\,\$]?[\@-\~]$/s;
+	    if (exists $encode_cache{$g}) {
+		get_encode_cache($g, 1);
+	    }
 	    $G_init[$_] = $g;
 	}
 
@@ -980,16 +1003,111 @@ sub process_GR_UTF8 {
 	$SS = 0;
     }
 
+    BEGIN {
+	%encode_cache = ( '$A' => 'GB2312',
+			  '$B' => 'EUC-JP',     # not used: directly implemented
+			  '$C' => 'EUC-KR',
+			  '$G' => ['EUC-TW', \&load_euc_tw, 'CNS 11643'],
+			                        # only Big5 is included in pure Perl distribution
+			  '$O' => ['euc-jisx0213', 'JIS2K', 'JIS X 0213'],
+			  ',A' => 'ISO-8859-1', # not used: directly implemented
+			  ',B' => 'ISO-8859-2',
+			  ',C' => 'ISO-8859-3',
+			  ',D' => 'ISO-8859-4',
+			  ',F' => 'ISO-8859-7',
+			  ',G' => 'ISO-8859-6',
+			  ',H' => 'ISO-8859-8',
+			  ',L' => 'ISO-8859-5',
+			  ',M' => 'ISO-8859-9',
+			  ',T' => 'ISO-8859-11',
+			  ',V' => 'ISO-8859-10',
+			  ',Y' => 'ISO-8859-13',
+			  ',_' => 'ISO-8859-14',
+			  ',b' => 'ISO-8859-15',
+			  ',f' => 'ISO-8859-16',
+			);
+	# Note: Technically, $B corresponds to jisx0208-raw, $C to KSC5601-raw, etc.
+	# We need to use FULLWIDTH variants for ASCII-conflicting characters, and
+	# current Perl implementation of *-raw encodings _actually_ does that,
+	# against the mapping definitions of Unicode Consortium.
+	# However, to make this doubly-sure for any future,
+	# we use EUC-encoded tables here.
+
+	%I646table = 
+          ('@' => "\#\N{U+a4}\@\[\\\]\^_\`\{\|\}\~", # 4/0  IRV old
+           'A' => "\N{U+a3}\$\@\[\\\]\^_\`\{\|\}\~", # 4/1  UK
+           'B' => "\#\$\@\[\\\]\^_\`\{\|\}\~", # 4/2  US-ASCII
+           'G' => "\#\N{U+a4}\@\N{U+c4}\N{U+d6}\N{U+c5}\^_\`\N{U+e4}\N{U+f6}\N{U+e5}\~", # 4/7  SE-B
+           'H' => "\#\N{U+a4}\N{U+c9}\N{U+c4}\N{U+d6}\N{U+c5}\N{U+dc}_\N{U+e9}\N{U+e4}\N{U+f6}\N{U+e5}\N{U+fc}", # 4/8  SE-C
+           'J' => "\#\$\@\[\N{U+a5}\]\^_\`\{\|\}\~", # 4/10 JP
+           'K' => "\#\$\N{U+a7}\N{U+c4}\N{U+d6}\N{U+dc}\^_\`\N{U+c4}\N{U+d6}\N{U+dc}\N{U+df}", # 4/11 DE
+           'L' => "\#\N{U+a4}\N{U+a7}\N{U+c3}\N{U+c7}\N{U+d5}\^_\`\N{U+e3}\N{U+e7}\N{U+f5}\N{U+b0}", # 4/12 PT-o
+           'R' => "\#\N{U+a3}\N{U+e0}\N{U+b0}\N{U+e7}\N{U+a7}\^_\N{U+b5}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+a8}", # 5/2  FR old
+           'T' => "\#\N{U+a5}\@\[\\\]\^_\`\{\|\}\~", # 5/4  CN
+           'Y' => "\#\N{U+a3}\N{U+a7}\N{U+b0}\N{U+e7}\N{U+e9}\^_\N{U+f9}\N{U+e0}\N{U+f2}\N{U+e8}\N{U+ec}", # 5/9  IT
+           '`' => "\#\$\@\N{U+c6}\N{U+d8}\N{U+c5}\^_\`\N{U+c6}\N{U+d8}\N{U+c5}\~", # 6/0  NO
+           'a' => "\#\N{U+a7}\@\N{U+c6}\N{U+d8}\N{U+c5}\^_\`\N{U+c6}\N{U+d8}\N{U+c5}\|", # 6/1  NO-2 old
+           'f' => "\#\N{U+a3}\N{U+e0}\N{U+b0}\N{U+e7}\N{U+a7}\^_\N{U+b5}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+a8}", # 6/6  FR
+           'g' => "\#\N{U+a4}\N{U+b4}\N{U+c3}\N{U+c7}\N{U+d5}\^_\`\N{U+e3}\N{U+e7}\N{U+f5}\~", # 6/7  PT-i
+           'h' => "\#\$\N{U+b7}\N{U+a1}\N{U+d1}\N{U+c7}\N{U+bf}_\`\N{U+b4}\N{U+f1}\N{U+e7}\N{U+a8}", # 6/8  ES
+           'i' => "\#\N{U+a4}\N{U+c1}\N{U+c9}\N{U+d6}\N{U+dc}\^_\N{U+e1}\N{U+e9}\N{U+f6}\N{U+fc}\N{U+2dd}", # 6/9  HU
+           'w' => "\#\$\N{U+e0}\N{U+e2}\N{U+e7}\N{U+ea}\N{U+ee}_\N{U+f4}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+fb}", # 7/7  CA1
+           'x' => "\#\$\N{U+e0}\N{U+e2}\N{U+e7}\N{U+ea}\N{U+c9}_\N{U+f4}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+fb}", # 7/8  CA2
+           'z' => "\#\$\N{U+17d}\N{U+160}\N{U+110}\N{U+106}\N{U+10c}_\N{U+17e}\N{U+161}\N{U+111}\N{U+107}\N{U+10d}", # 7/10 YU
+           '!A'=> "\#\N{U+a4}\@\N{U+a1}\N{U+d1}\]\N{U+bf}_\`\N{U+b4}\N{U+f1}\[\N{U+a8}", # 2/1 4/1  CU
+           '!C'=> "\N{U+a3}\N{U+a4}\N{U+d3}\N{U+c9}\N{U+cd}\N{U+da}\N{U+c1}_\N{U+f3}\N{U+e9}\N{U+ed}\N{U+fa}\N{U+e1}", # 2/1 4/3  IE
+	  );
+    }
+
     sub get_encode_cache {
-	my $key = $_[0];
-	return undef unless exists $encode_cache{$key};
+	my ($key, $forced) = @_;
+	my $enc = undef;
+
+	return undef unless defined $encode_cache{$key};
+
 	my $e = $encode_cache{$key};
-	unless (ref($e)) {
-	    my $enc = find_encoding($e) // die "Error: Can't load encoding $e";
-    #	print "Info: Loaded encoding $e\n";
-	    $e = $encode_cache{$key} = $enc;
+	my $name = $e;
+	my $r = ref($e);
+
+	if ($r eq 'ARRAY') {
+	    $name = $e->[0];
+	    my $module = $e->[1];
+	    my $printname = $e->[2] || $name;
+
+	    if (ref $module eq 'CODE') {
+		debug&2 and	print "Info: Loading encoding '$name' (via func)\n";
+		eval { &$module() };
+	    } else {
+		die unless $module =~ /\A[A-Za-z0-9-_:]+\z/;
+		debug&2 and	print "Info: Loadng extra encoding module $module\n";
+		eval "require Encode::$module";
+	    }
+	    if ($@) {
+		if ($@ =~ m|^Can't locate Encode\/(\w+)\.pm in \@INC|) {
+		    $@ = "module Encode::$1 is required to support $printname\n";
+		}
+		if ($forced) {
+		    die "Error: can't load Encoding $name: $@";
+		}
+		else {
+		    warn "Warning: can't load Encoding $name: $@";
+		    $enc = undef;
+		    $encode_cache{$key} = undef;
+		    return undef;
+		}
+	    }
+	    $e = $name;
+	    $r = '';
+	    # fall through
 	}
-	return $e;
+	if ($r) {
+	    return $e;
+	} else {
+	    $enc = find_encoding($e) // die "Error: Can't load encoding $e";
+	    debug&2 and	print "Info: Loaded encoding $e\n";
+	    $encode_cache{$key} = $enc;
+	    return $enc;
+	}
     }
 
     sub process_GLR_2022 {
@@ -1010,14 +1128,20 @@ sub process_GR_UTF8 {
 	    return;
 	}
 
-	my $plane = $SS ? $SS : $GLR[($code > 0x80 ? 1 : 0)];
+	my $plane = $SS ? $SS : $GLR[$is_GR];
 	$SS = 0;
 
 	my $G = $G[$plane];
+
 	my $c = $code & 0x7f;
 
     #    printf "ofs %04x: plane %d, assign %s, code %02x (%02x)\n", $ofs, $plane, $G, $c, $code;
      #   $chrbuf .= sprintf("<%04x>>", $ofs);
+
+	if (($c == 0x20 || $c == 0x7f) && substr($G, 0, 1) ne ',') {
+	    $is_GR ? process_GR_none($ofs, $code) : process_C0_ASCII($ofs, $code);
+	    return;
+	}
 
 	given ($G) {
 	    when ('B') {
@@ -1085,29 +1209,58 @@ sub process_GR_UTF8 {
 		    put_decorate("x");
 		}
 	    }
-	    when (/^\$[AC]$/) { # G (EUC-TW) dropped as optional in Perl
+	    when (/^\$[ACO]$/ or ($_ eq '$G' and !$broken_euc_tw)) {
+		# G (EUC-TW) is optional AND broken in Perl
 		my $next = get($ofs + 1) & 0x7f;
 		if ($next >= 0x21 && $next <= 0x7e) {
 		    my $enc = get_encode_cache($G);
-		    put_maybe_fullwidth($enc->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
+		    if ($enc) {
+			put_maybe_fullwidth($enc->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
+		    } else {
+			put_invalid_fullwidth(2);
+		    }
 		    $chreaten = $chrforward = 1;
 		} else {
 		    put_decorate(".");
 		}
 	    }
-    #	when (/^\$[H-M]$/) {
-    #	    my $next = get($ofs + 1) & 0x7f;
-    #	    my $next2 = get($ofs + 2) & 0x7f;
-    #	    if ($next >= 0x21 && $next <= 0x7e) {
-    #		my $enc = get_encode_cache('$G'); # EUC-TW
-    #		put_maybe_fullwidth($enc->decode(chr(0xa1 + ord(substr($G, 2, 1)) - 0x48) . chr(0x80 | $c) . chr(0x80 | $next)), 2);
-    #		$chreaten = 2;
-    #		$chrforward = 1;
-    #	    } else {
-    #		put_decorate(".");
-    #	    }
-    #	}
-
+	    when (/^\$[G-M]$/) {
+		# $G comes here when $broken_euc_tw is true
+		my $next = get($ofs + 1) & 0x7f;
+		if ($next >= 0x21 && $next <= 0x7e) {
+		    my $enc = get_encode_cache('$G'); # EUC-TW
+		    if ($enc) {
+			my $s = chr(0x8e) . chr(0xa1 + ord(substr($G, 1, 1)) - 0x47) .
+			  chr(0x80 | $c) . chr(0x80 | $next);
+			put_maybe_fullwidth($enc->decode($s), 2);
+		    } else {
+			put_invalid_fullwidth(2);
+		    }
+		    $chreaten = $chrforward = 1;
+		} else {
+		    put_decorate(".");
+		}
+	    }
+	    when ('$P') {
+		# EUC-JP2013, 2nd plane
+		my $next = get($ofs + 1) & 0x7f;
+		if ($next >= 0x21 && $next <= 0x7e) {
+		    my $enc = get_encode_cache('$O');
+		    if ($enc && 
+			($c == 0x21
+			 || $c >= 0x23 && $c <= 0x25
+			 || $c == 0x28
+			 || $c >= 0x2d && $c <= 0x2f
+			 || $c >= 0x6e)) {
+			put_maybe_fullwidth($enc->decode(chr(0x8f) . chr(0x80 | $c) . chr(0x80 | $next)), 2);
+			return;
+		    } else {
+			put_invalid_fullwidth(2);
+		    }
+		} else {
+		    put_decorate(".");
+		}
+	    }
 	    default {
 		put_decorate("x"); # "x"
 	    }
@@ -1122,13 +1275,18 @@ sub process_GR_UTF8 {
 	$SS = 0;
 
 	given ($code) {
-	    when ([0x10, 0x13, 0x11, 0x00]) {
-		if ($reset_2022_status) {
+	    when ([0x0a, 0x0d, 0x0b, 0x00]) {
+		debug&4&& print "before: @GLR @G  tobe: @GLR_init @G_init reset=$reset_2022_status\n";
+		if ($reset_2022_status == 1) {
 		    # workaround for half-binary data:
-		    # reset shift statuses at each line-beginning
+		    # reset shift status of GL at each line-beginning
+		    $GLR[0] = @GLR_init[0];
+		    $G[$GLR[0]] = $G_init[$GLR[0]] if $G_init[$GLR[0]] ne '';
+		} elsif ($reset_2022_status >= 2) {
 		    @G = @G_init;
 		    @GLR = @GLR_init;
 		}
+		debug&4&& print "after: @GLR @G  tobe: @GLR_init @G_init reset=$reset_2022_status\n";
 		process_C0_ASCII(@_);
 	    }
 	    when ([0x0e, 0x0f]) {
@@ -1276,6 +1434,60 @@ sub process_GR_UTF8 {
 	    }
 	}
 	process_C0_ASCII(@_);
+    }
+
+    sub load_euc_tw {
+	# EUC-TW is broken in current HanExtra;
+	# check it.
+	require Encode::HanExtra;
+
+	my $enc = find_encoding('euc-tw');
+	given (unpack("H*", $enc->encode("1 \x{4E00}"))) {
+	    when ('3120c4a1') {
+		# CNS-11643-1 is loaded to GR/G1.  OK.
+		$broken_euc_tw = 0;
+	    }
+	    when ('31208ea1c4a1') {
+		# CNS-11643 is encoded as combined G2.  NG.
+		$broken_euc_tw = 1;
+	    }
+	    default {
+		die "Internal error: module Encode::HanExtra is deeply broken ($_);"
+	    }
+	}
+	return;
+    }
+    
+    # put here because we need $broken_euc_tw
+    sub process_GR_EucTW {
+	my ($ofs, $code) = (@_);
+	my $enc = get_encode_cache('$G');
+
+	if ($code >= 0xa1 && $code <= 0xfe) {
+	    my $next = get($ofs + 1);
+	    if ($next >= 0xa1 && $next <= 0xfe) {
+		my $s = chr($code) . chr($next);
+		$s = "\x8e\xa1$s" if $broken_euc_tw;
+		put_maybe_fullwidth($enc->decode($s), 2);
+		return;
+	    }
+	}
+	if ($code == 0x8e) {
+	    my $next = get($ofs + 1);
+	    my $next1 = get($ofs + 2);
+	    my $next2 = get($ofs + 3);
+	    if ($next >= 0xa2 && $next <= 0xaf
+		&& $next1 >= 0xa1 && $next1 <= 0xfe
+		&& $next2 >= 0xa1 && $next2 <= 0xfe) {
+		put_normal($enc->decode(chr($code) . chr($next) . chr($next1) . chr($next2)), 2);
+		return;
+	    }
+	}
+	process_GR_none(@_);
+    }
+
+    sub process_init_eucTW {
+	get_encode_cache('$G', 1);
     }
 }
 
