@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # hexja.pl version 0.30 - hexadecimal dump tool for Japanese and other codings
 # (c) 2016 Yutaka OIWA.
-# $Id$
+# $Id: hexja.pl,v 1.15 2016/09/10 05:53:59 yutaka Exp yutaka $
 
 use Encode qw(:default FB_QUIET);
 use utf8;
@@ -15,21 +15,24 @@ no if ($] >= 5.018), 'warnings', qw( experimental::smartmatch );
 use constant ("is_DOSish", $^O =~ /^(?:MSWin32|cygwin|dos)\z/s);
 
 # debugging
-my $dlevel = $ENV{HEXDEBUG} + 0;
+my $dlevel = 0;
 
 sub debug ();
 
 BEGIN {
-    if (exists($ENV{HEXDEBUG}) or scalar(grep{ m/^--debug(?:=.+)?$/ } @ARGV)) {
+    if (scalar(grep{ m/^--debug(?:=.+)?$/ } @ARGV)) {
 	*debug = sub () { $dlevel };
+	eval "use Data::Dumper;";
     } else {
         *debug = sub () { 0 };
+	*Dumper = sub (@) { die 'Dumper is not loaded' }
     }
     # usage: debug&n&& printf(...);
     # allocation of the bit flag <n>:
     #   2: encoding loading
     #   4: locale
     #   8: charwidth
+    #  16: terminfo/termcap
 
     # Without HEXDEBUG or --debug, the whole debugging code will be optimized out.
 }
@@ -71,6 +74,9 @@ our $decorate = 2;
 our $outenc = undef;
 our $reset_2022_status = 1;
 our $use_control_pictures = 0;
+
+# terminal attributes
+our ($color_sequence_d, $color_sequence_f, $color_sequence_n, $color_colorful);
 
 our %codings = 
   ( 'binary'    => [ "Binary input (ASCII only)",
@@ -126,29 +132,134 @@ our %coding_aliases =
     'gb2312' => 'euc-cn',
   );
 
-GetOptions ("ascii|a"          => sub { set_input_coding('binary') },
-	    "shift-jis|s"      => sub { set_input_coding('shiftjis') },
-	    "euc-jp|ujis|e"    => sub { set_input_coding('eucjp') },
-	    "utf-8|u"          => sub { set_input_coding('utf8') },
-	    "iso-2022-jp|jis|junet|j"
-	                       => sub { set_input_coding('jis') },
-	    "input-coding|i=s" => \&set_input_coding,
-	    "output-coding=s"  => \$outcode,
-	    "list-coding"      => \&list_input_coding,
-	    "decorate|d!"      => \$decorate,
-	    "plaintext|p"      => sub { $decorate = 0 },
-	    "char|c:1"         => \$charbased,
-	    "text|t"           => \$textbased,
-	    "charwidth=i"      => \$widthmethod,
-	    "reset-status=i"   => \$reset_2022_status,
-	    "no-reset-status"  => sub { $reset_2022_status = 0 },
-	    "help|h|?"         => sub { &usage() },
-	    "use-control-pictures:1" => \$use_control_pictures,
-	    "cjk-region=s"     => \$cjk_region,
-	    "debug=i"          => \$dlevel,
-	   ) or usage('');
+our ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
 
-usage("-c and -t cannot be used together") if $charbased && $textbased;
+
+### Main routine
+
+sub main () {
+    # initialize
+    GetOptions ("ascii|a"          => sub { set_input_coding('binary') },
+		"shift-jis|s"      => sub { set_input_coding('shiftjis') },
+		"euc-jp|ujis|e"    => sub { set_input_coding('eucjp') },
+		"utf-8|u"          => sub { set_input_coding('utf8') },
+		"iso-2022-jp|jis|junet|j" => sub { set_input_coding('jis') },
+		"input-coding|i=s" => \&set_input_coding,
+		"output-coding=s"  => \$outcode,
+		"list-coding"      => \&list_input_coding,
+		"decorate|d!"      => \$decorate,
+		"plaintext|p"      => sub { $decorate = 0 },
+		"char|c:1"         => \$charbased,
+		"text|t"           => \$textbased,
+		"charwidth=i"      => \$widthmethod,
+		"reset-status=i"   => \$reset_2022_status,
+		"no-reset-status"  => sub { $reset_2022_status = 0 },
+		"help|h|?"         => sub { &usage() },
+		"use-control-pictures:1" => \$use_control_pictures,
+		"cjk-region=s"     => \$cjk_region,
+		"debug=i"          => \$dlevel,
+	       ) or usage('');
+
+    usage("-c and -t cannot be used together") if $charbased && $textbased;
+
+    if (defined $ARGV[1]) {
+	die "too many files specified.";
+    }
+    if (!defined $ARGV[0] || $ARGV[0] eq '-') {
+	*IN = *STDIN{IO};
+    } else {
+	open IN, "<:raw", $ARGV[0] or die "open: $!";
+    }
+    binmode(IN);
+
+    set_output_coding($outcode);
+
+    setup_color_sequences();
+
+    if ($decorate == 2 && $is_tty) {
+	$decorate = 1;
+    }
+    if ($decorate == 2 && !$is_tty && $color_sequence_n eq '') {
+	$decorate = 0;
+    }
+
+    {
+	my @a;
+
+	if (ref($incode) eq 'ARRAY' && $incode->[0] eq 'iso2022') {
+	    @a = ('2022:', split(/ +/, $incode->[1]));
+	} else {
+	    if ($incode eq 'detect') {
+		# input encoding guess (detection)
+		read(IN, $buf, BUFSIZE * 8) // die "read error: $!"; # 0 is OK, undef is error
+
+		my $inc = detect_coding($buf);
+		printf "# Detected coding: %s\n", $inc if (($buf ne '') && (!$textbased || !!($dlevel & 4)));
+		set_input_coding($inc);
+	    }
+	    @a = @{$codings{$incode}};
+	    shift @a;
+	}
+
+	if (ref $a[0]) {
+	    ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = @a;
+	} elsif ($a[0] eq '2022:') {
+	    shift @a;
+	    ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = 
+	      (\&process_GLR_2022, \&process_GLR_2022, \&process_C0_2022, \&process_init_2022, @a);
+	} elsif ($a[0] eq 'mb:') {
+	    shift @a;
+	    ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = 
+	      (\&process_GL_ASCII, \&process_GR_mb, \&process_C0_ASCII, \&process_init_mb, @a);
+	} else {
+	    die "internal error: unknown coding system definition";
+	}
+    }
+
+    &$process_init(@process_init_args) if defined $process_init;
+
+    die "Write failed: $!" if STDOUT->error;
+
+    # main loop
+
+    while (1) {
+	my $o;
+	$binbuf = "";
+	$chrbuf = "";
+	for ($o = 0; $o < 16; $o++) {
+	    my $code = get($addr + $o);
+	    last if !defined $code;
+	    unless ($charbased | $textbased) {
+		$binbuf .= sprintf (" %02x", $code);
+		$binbuf .= " -" if $o == 7;
+	    }
+	process_char($addr + $o, $code);
+	}
+	last if $o == 0;
+	unless ($charbased || $textbased) {
+	    $binbuf = substr($binbuf . (" "x48), 0, 50) if length $binbuf < 50;
+	}
+	put_normal("", 0) unless $textbased;
+	if ($textbased) {
+	    print $chrbuf                                       or last;
+	} else {
+	    printf "%08x:%s  %s\n", $addr, $binbuf, $chrbuf     or last;
+	}
+	$chrforward = 0;
+	last if $o != 16;
+	$addr += 16;
+    }
+    die "Write failed: $!" if STDOUT->error;
+
+    # cleaning up
+
+    $chrbuf = "";
+    put_normal("", 0); # if $textbased
+    print "$chrbuf";
+
+    close STDOUT or die "Write failed: $!"; # catch any errors
+    exit 0;
+}
 
 sub usage {
     require FindBin;
@@ -213,96 +324,6 @@ sub list_input_coding {
     print "\n(cases, spaces and hyphens are ignored: e.g. ISO-8859-1 is accepted)\n";
     exit 0;
 }
-
-if (defined $ARGV[1]) {
-    die "too many files specified.";
-}
-if (!defined $ARGV[0] || $ARGV[0] eq '-') {
-    *IN = *STDIN{IO};
-} else {
-    open IN, "<:raw", $ARGV[0] or die "open: $!";
-}
-binmode(IN);
-
-if ($decorate == 2 && $is_tty) {
-    $decorate = 1;
-}
-
-set_output_coding($outcode);
-
-my ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
-
-{
-    my @a;
-
-    if (ref($incode) eq 'ARRAY' && $incode->[0] eq 'iso2022') {
-	@a = ('2022:', split(/ +/, $incode->[1]));
-    } else {
-	if ($incode eq 'detect') {
-	    # input encoding guess (detection)
-	    read(IN, $buf, BUFSIZE * 8) // die "read error: $!"; # 0 is OK, undef is error
-
-	    my $inc = detect_coding($buf);
-	    printf "# Detected coding: %s\n", $inc if (($buf ne '') && (!$textbased || !!($dlevel & 4)));
-	    set_input_coding($inc);
-	}
-	@a = @{$codings{$incode}};
-	shift @a;
-    }
-
-    if (ref $a[0]) {
-	($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = @a;
-    } elsif ($a[0] eq '2022:') {
-	shift @a;
-	($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = 
-	  (\&process_GLR_2022, \&process_GLR_2022, \&process_C0_2022, \&process_init_2022, @a);
-    } elsif ($a[0] eq 'mb:') {
-	shift @a;
-	($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = 
-	  (\&process_GL_ASCII, \&process_GR_mb, \&process_C0_ASCII, \&process_init_mb, @a);
-    } else {
-	die "internal error: unknown coding system definition";
-    }
-}
-
-&$process_init(@process_init_args) if defined $process_init;
-
-die "Write failed: $!" if STDOUT->error;
-while (1) {
-    my $o;
-    $binbuf = "";
-    $chrbuf = "";
-    for ($o = 0; $o < 16; $o++) {
-	my $code = get($addr + $o);
-	last if !defined $code;
-	unless ($charbased | $textbased) {
-	    $binbuf .= sprintf (" %02x", $code);
-	    $binbuf .= " -" if $o == 7;
-	}
-	process_char($addr + $o, $code);
-    }
-    last if $o == 0;
-    unless ($charbased || $textbased) {
-	$binbuf = substr($binbuf . (" "x48), 0, 50) if length $binbuf < 50;
-    }
-    put_normal("", 0) unless $textbased;
-    if ($textbased) {
-	print $chrbuf                                       or last;
-    } else {
-	printf "%08x:%s  %s\n", $addr, $binbuf, $chrbuf     or last;
-    }
-    $chrforward = 0;
-    last if $o != 16;
-    $addr += 16;
-}
-die "Write failed: $!" if STDOUT->error;
-
-$chrbuf = "";
-put_normal("", 0); # if $textbased
-print "$chrbuf";
-
-close STDOUT or die "Write failed: $!"; # catch any errors
-exit 0;
 
 ### input coding parameter handlings
 
@@ -413,7 +434,7 @@ sub uline_decorate {
 	
 	if ($decorate == 1) {
 	    if ($curdecorate != 1) {
-		$chrbuf .= "\e[0;7;34;46m";
+		$chrbuf .= $color_sequence_d;
 		$curdecorate = 1;
 	    }
 	}
@@ -441,10 +462,14 @@ sub uline_decorate {
 	return if $textbased;
 	if ($decorate == 1) {
 	    if ($curdecorate != 2) {
-		$chrbuf .= "\e[0;36m";
+		$chrbuf .= $color_sequence_f;
 		$curdecorate = 2;
 	    }
-	    $chrbuf .= ($charbased ? "__ " : "_") x $_[0];
+	    if ($color_colorful) {
+		$chrbuf .= ($charbased ? "__ " : "_") x $_[0];
+	    } else {
+		$chrbuf .= ($charbased ? "   " : " ") x $_[0];
+	    }
 	} else {
 	    $chrbuf .= ($charbased ? "   " : " ") x $_[0];
 	}
@@ -463,7 +488,7 @@ sub uline_decorate {
 	my ($s, $n) = @_;
 	my $o = $s;
 	if ($curdecorate != 0) {
-	    $chrbuf .= "\e[0m";
+	    $chrbuf .= $color_sequence_n;
 	    $curdecorate = 0;
 	}
 	return if $s eq '';
@@ -1580,4 +1605,124 @@ sub get ($) {
     }
     return ord($r);
 }
+
+### terminal_handling
+
+{
+    sub setup_color_sequences {
+	my ($ansi_OK, $term);
+	my $reESC = qr/(?:\\[eE]|\\033|\\[xX]1[bB])/;
+
+      TESTING: {
+	    if (is_DOSish) {
+		$ansi_OK = 1;
+		debug&16&& print "ANSI sequence is assumed supported on DOSish platforms\n";
+		last TESTING;
+	    }
+	    if ($ENV{LS_COLORS}) {
+		debug&16&& print "LS_COLORS exists.\n";
+		# check from LS_COLORS (trusting dircolors(1))
+		local $_ = ":$ENV{LS_COLORS}:";
+		if ((/:lc=/ && !/:lc=${reESC}\[:/) ||
+		    (/:rc=/ && !/:rc=m:/) ||
+		    (/:ec=/ && !/:ec=${reESC}\[0?m:/)) {
+		    debug&16 && print "non-ANSI code definition is found on LS_COLORS: skipping\n";
+		} else {
+		    if (/:([^:=]+=(([34]|[0-2][0-9]*);)*[34][0-9](;([34]|[0-2][0-9]*))*):/) {
+			debug&16 && print "LS_COLORS entry $1 seems to use ANSI sequence. trusting\n";
+			$ansi_OK = 1;
+			last TESTING;
+		    };
+		}
+	    }
+	    # terminfo testing
+	    if (-x "/usr/bin/infocmp") {
+		debug&16&& do { print "trying terminfo.\n" };
+		local $_ = qx(/usr/bin/infocmp -I 2>/dev/null); # -CTr
+		if (defined $_) {
+		    s/^#.*\n//gm;
+		    s/\n[ \t]+//gs;
+		    s/\A[^,]+, *//s;
+		    chomp $_;
+		    my %e = map { / *+([^=#]+)[=#](.*)\z/ ? ($1, $2) : ($_, '') } (split /, */s, $_);
+		    if (($e{AF} // $e{setaf}) =~ /^${reESC}\[3\%p1\%dm\z/s
+			&& ($e{AB} // $e{setab}) =~ /^${reESC}\[4\%p1\%dm\z/s) {
+			debug&16&& print "setaf/setab found as expected: ANSI OK\n";
+			$ansi_OK = 1;
+			last TESTING;
+		    } elsif ($e{setaf} ne '' && $e{setab} ne '') {
+			debug&16&& print "setaf/setab found is not expected\n";
+		    } else {
+			debug&16&& print "setaf/setab not found\n";
+		    }
+		}
+	    };
+	  TERMCAP_TESTING:
+	    {
+		debug&16&& print "trying termcap\n";
+		eval {
+		    require Term::Cap;
+		};
+		if ($@) {
+		    debug&16&& print "Term::Cap is not available: $@\n";
+		    $term = undef;
+		    last TESTING;
+		}
+		    
+		eval {
+		    local $ENV{PATH} = "/usr/bin"; # only to use /usr/bin/infocmp
+		    $term = Tgetent Term::Cap { OSPEED => 9600 };
+		};
+		if ($@) {
+		    debug&16&& print "tgetent is failed: $@\n";
+		    $term = '';
+		    last TERMCAP_TESTING;
+		}
+		my $af = $term->Tputs('AF');
+		my $ab = $term->Tputs('AB');
+		if ($af =~ /^\e\[3\%dm\z/s
+		    && $ab =~ /^\e\[4\%dm\z/s) {
+		    debug&16&& print "AF/AB found as expected: ANSI OK\n";
+		    $ansi_OK = 1;
+		    last TESTING;
+		}
+	    }
+	}
+	if ($ansi_OK) {
+	    $color_sequence_d = "\e[0;7;34;46m";
+	    $color_sequence_f = "\e[0;36m";
+	    $color_sequence_n = "\e[0m";
+	    $color_colorful = 1;
+	    return 1;
+	}
+	if ($term) {
+	    my $b = $term->Tputs('md');
+	    my $u = $term->Tputs('us');
+	    my $e = $term->Tputs('me');
+	    if ($b && $u && $e) {
+		debug&16&& print "bold, underline, reset found\n";
+		$e =~ s/\e\(B//;
+		$color_sequence_d = "$e$b$u";
+		$color_sequence_f = "$e$u";
+		$color_sequence_n = "$e";
+		$color_colorful = 0;
+		return 1;
+	    }
+	}
+	debug&16&& print "bold, underline, reset not found ... dumb terminal?\n";
+	$color_sequence_d = '';
+	$color_sequence_f = '';
+	$color_sequence_n = '';
+	$color_colorful = 0;
+	return 0;
+    }
+}
+
+sub load {
+    determine_locale_encoding();
+    set_output_coding('detect');
+    1;
+}
+
+caller() ? load() : main();
 
