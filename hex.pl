@@ -1,8 +1,8 @@
 #!/usr/bin/perl -C0
 # -*- coding: utf-8 -*-
-# hexja.pl version 0.30 - hexadecimal dump tool for Japanese and other codings
+# hex.pl version 0.30 - multi-locale hexadecimal dump tool
 # (c) 2016 Yutaka OIWA.
-# $Id: hexja.pl,v 1.15 2016/09/10 05:53:59 yutaka Exp yutaka $
+# $Id: hex.pl,v 1.16 2016/09/10 09:54:34 yutaka Exp yutaka $
 
 use Encode qw(:default FB_QUIET);
 use utf8;
@@ -70,6 +70,7 @@ our $is_tty = (-t STDOUT);
 our $incode = 'detect';
 our $outcode = 'detect';
 our $output_utf8 = 0;
+our $output_cp932 = 0;
 our $decorate = 2;
 our $outenc = undef;
 our $reset_2022_status = 1;
@@ -122,14 +123,31 @@ our %codings =
     'detect'    => [ "Automatic detection" ],
   );
 
-our %coding_aliases = 
-  ( 'ascii' => 'binary',
-    'junet' => 'iso2022jp',
-    'jis'   => 'iso2022jp',
-    'ujis'  => 'eucjp',
-    'sjis'  => 'shiftjis',
-    'guess' => 'detect',
-    'gb2312' => 'euc-cn',
+our %coding_aliases =
+  (
+   # altenative keywords
+   'ascii' => 'binary',
+   'junet' => 'iso2022jp',
+   'jis'   => 'iso2022jp',
+   'ujis'  => 'eucjp',
+   'sjis'  => 'shiftjis',
+   'guess' => 'detect',
+   'gb2312' => 'euccn',
+   
+   # mnemonics
+   'j'      => 'iso2022jp',
+   'ij'     => 'iso2022jp',
+   'ej'     => 'eucjp',
+   'sj'     => 'shiftjis',
+   'ek'     => 'euckr',
+   'ec'     => 'euccn',
+   'b5'     => 'big5',
+   'u'      => 'utf8',
+   'l1'     => 'iso88591',
+   'latin1' => 'iso88591',
+   '2022'   => 'iso2022',
+   'ik'     => 'iso2022',
+   'ic'     => 'iso2022',
   );
 
 our ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
@@ -612,6 +630,7 @@ sub set_output_coding ($) {
     my ($enc_locale, $locale_coding) = determine_locale_encoding();
 
     if ($coding ne 'detect') {
+	debug&4 and print "requested output coding: $coding\n";
 	$outenc = find_encoding($coding) // die "Error: cannot find output coding $coding\n";
 	$coding = $outenc->name(); # canonify for possible coding-dependent tweaks
     } elsif ($locale_coding) {
@@ -621,16 +640,18 @@ sub set_output_coding ($) {
 	$outenc = $enc_U8;
 	$coding = "UTF-8";
     }
-    $coding = 'utf-8' if $coding == 'utf-8-strict';
+    $coding = 'utf-8' if $coding eq 'utf-8-strict';
     
     binmode (STDOUT);
     binmode (STDOUT, ":crlf") if is_DOSish;
     if ($coding =~ /\Autf-8\z/i) {
 	binmode (STDOUT, ":utf8");
 	$output_utf8 = 1;
+	$output_cp932 = 0;
     } else {
 	binmode (STDOUT, ":encoding($coding)") // return undef;
 	$output_utf8 = 0;
+	$output_cp932 = $coding eq 'cp932';
     }
     debug&4 and printf "OUTPUT ENCODING: $coding\n";
     return;
@@ -875,7 +896,7 @@ sub process_GR_SJIS {
 	my $next = get($ofs + 1);
 	if ($next >= 0x40 && $next <= 0x7e || $next >= 0x80 && $next <= 0xfd) {
 	    my $s = chr($code) . chr($next);
-	    my $o = $enc_SJ->decode($s);
+	    my $o = $output_cp932 ? undef : $enc_SJ->decode($s);
 	    $o = $enc_932->decode($s) if (length($o) != 1 || substr($o, 0, 1) eq "\x{fffd}");
 	    put_maybe_fullwidth($o, 2);
 	    return;
@@ -889,7 +910,13 @@ sub process_GR_EucJP {
     if ($code >= 0xa1 && $code <= 0xfe) {
 	my $next = get($ofs + 1);
 	if ($next >= 0xa1 && $next <= 0xfe) {
-	    put_maybe_fullwidth($enc_EJ->decode(chr($code) . chr($next)), 2);
+	    if (! $output_cp932) {
+		put_maybe_fullwidth($enc_EJ->decode(chr($code) . chr($next)), 2);
+	    } else {
+		# requireing EUCJPMS module is too much: we do convert by our own
+		my $a = jis2sj_code($code, $next);
+		put_maybe_fullwidth($enc_932->decode($a), 2);
+	    }
 	    return;
 	}
     }
@@ -910,6 +937,25 @@ sub process_GR_EucJP {
 	}
     }
     process_GR_none(@_);
+}
+
+sub jis2sj_code (@) {
+    my ($h, $l) = @_;
+    if (@_ == 1) {
+	$l = $h & 0x7f;
+	$h = ($h >> 8) & 0x7f;
+    } else {
+	$l &= 0x7f;
+	$h &= 0x7f;
+    }
+    $h -= 0x20;
+    $l -= 0x20;
+    my $s1 = int(($h + 1) / 2) + 0x80;
+    $s1 += 0x40 if $s1 >= 0xa0;
+    my $s2 = $l + 0x3f;
+    $s2 += 94 unless $h & 1;
+    $s2++ if $s2 >= 0x7f;
+    return chr($s1) . chr($s2);
 }
 
 ### input processing: utf-8 (with wide-char support)
@@ -1190,7 +1236,11 @@ sub process_GR_UTF8 {
 	    when (['$B', '$@']) {
 		my $next = get($ofs + 1) & 0x7f;
 		if ($next >= 0x21 && $next <= 0x7e) {
-		    put_maybe_fullwidth($enc_EJ->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
+		    if ($output_cp932) {
+			put_maybe_fullwidth($enc_932->decode(jis2sj_code($c, $next)), 2);
+		    } else {
+			put_maybe_fullwidth($enc_EJ->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
+		    }
 		} else {
 		    put_decorate(".");
 		}
