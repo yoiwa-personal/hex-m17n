@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # hex.pl version 0.30 - multi-locale hexadecimal dump tool
 # (c) 2016 Yutaka OIWA.
-# $Id: hex.pl,v 1.16 2016/09/10 09:54:34 yutaka Exp yutaka $
+# $Id: hex.pl,v 1.17 2016/09/11 01:03:51 yutaka Exp yutaka $
 
 use Encode qw(:default FB_QUIET);
 use utf8;
@@ -22,10 +22,12 @@ sub debug ();
 BEGIN {
     if (scalar(grep{ m/^--debug(?:=.+)?$/ } @ARGV)) {
 	*debug = sub () { $dlevel };
-	eval "use Data::Dumper;";
+	eval 'use Data::Dumper;
+              $Data::Dumper::Useqq = $Data::Dumper::Terse = 1;
+              $Data::Dumper::Quotekeys = 0;'; die "$@" if "$@";
     } else {
         *debug = sub () { 0 };
-	*Dumper = sub (@) { die 'Dumper is not loaded' }
+	*Dumper = sub (@) { die 'Dumper is not loaded (no debugging)' }
     }
     # usage: debug&n&& printf(...);
     # allocation of the bit flag <n>:
@@ -460,7 +462,7 @@ sub uline_decorate {
 	    my $ld = length($dec);
 	    $ld++ if $dec =~ /\p{Ea: W}|\p{Ea: F}/;
 	    my $l = int((length($dec) + 2) / 3);
-	    my $sp = $l * 3 - length($dec);
+	    my $sp = $l * 3 - $ld;
 	    $chrbuf .= uline_decorate($dec);
 	    if ($sp) {
 		$chrbuf .= uline_decorate(" " x ($sp - 1));
@@ -472,10 +474,16 @@ sub uline_decorate {
 #	    print "decorate: $dec for spc $n, strlen $ld, used_blocks $l, added_spaces $sp -> etn $chreaten fwd $chrforward\n";
 	    $chrforward = 0 if $chrforward < 0; #for safety
 	} else {
+	    my $s = ($decorate ? $dec : $smpl);
+	    my $ld = length($s);
+	    $ld++ if $dec =~ /\p{Ea: W}|\p{Ea: F}/;
 	    $chrbuf .= ($decorate ? uline_decorate($dec) : $smpl);
-	    $chreaten = $chrforward = $n - 1;
+	    $chreaten = $n - 1;
+	    $chrforward = $ld - 1;
+	    #print "decorate: $dec for spc $n, strlen $ld -> etn $chreaten fwd $chrforward\n";
 	}
     }
+
     sub put_fill {
 	return if $textbased;
 	if ($decorate == 1) {
@@ -672,7 +680,8 @@ sub process_char {
 	}
 	return;
     }
-    
+    $chrforward = 0; # for safety; space overrun is silently ignored
+
     if (($code >= 0x20 && $code <= 0x7f)) {
 	&$process_GL(@_);
     } elsif ($code < 0x20) {
@@ -868,7 +877,8 @@ sub put_invalid_fullwidth {
     if (!$fw_fill_char) {
 	$fw_fill_char = is_printable_to_terminal("\x{3013}") ? "\x{3013}" : "..";
     }
-    put_decorate($fw_fill_char . (" " x ($n - 2)), "." x $n, $n);
+#    put_decorate($fw_fill_char . (" " x ($n - 2)), "." x $n, $n);
+    put_decorate($fw_fill_char, "..", $n);
 }
 
 sub put_maybe_fullwidth {
@@ -884,6 +894,23 @@ sub put_maybe_fullwidth {
     }
 }
 
+sub decode_char_maybe ($$) {
+    my ($enc, $_s) = @_;
+    my $s = "$_s";
+    my $o = $enc->decode($s, FB_QUIET);
+    ($s ne '' or length($o) != 1 or $o eq "\x{fffd}") ? undef : $o;
+}
+
+sub put_decode_maybe_fullwidth ($$$) {
+    my ($enc, $s, $n) = @_;
+    my $t = decode_char_maybe($enc, $s);
+    if ($t) {
+	put_normal($t, $n);
+    } else {
+	put_invalid_fullwidth($n);
+    }
+}
+
 ### input processing: Japanese specific
 
 sub process_GR_SJIS {
@@ -896,10 +923,10 @@ sub process_GR_SJIS {
 	my $next = get($ofs + 1);
 	if ($next >= 0x40 && $next <= 0x7e || $next >= 0x80 && $next <= 0xfd) {
 	    my $s = chr($code) . chr($next);
-	    my $o = $output_cp932 ? undef : $enc_SJ->decode($s);
-	    $o = $enc_932->decode($s) if (length($o) != 1 || substr($o, 0, 1) eq "\x{fffd}");
-	    put_maybe_fullwidth($o, 2);
-	    return;
+	    my $o;
+	    $o =   decode_char_maybe($enc_SJ, $s) unless $output_cp932;
+	    $o //= decode_char_maybe($enc_932, $s);
+	    defined $o ? put_normal($o, 2) : put_invalid_fullwidth(2);
 	}
     }
     process_GR_none(@_);
@@ -911,11 +938,11 @@ sub process_GR_EucJP {
 	my $next = get($ofs + 1);
 	if ($next >= 0xa1 && $next <= 0xfe) {
 	    if (! $output_cp932) {
-		put_maybe_fullwidth($enc_EJ->decode(chr($code) . chr($next)), 2);
+		put_decode_maybe_fullwidth($enc_EJ, chr($code) . chr($next), 2);
 	    } else {
 		# requireing EUCJPMS module is too much: we do convert by our own
 		my $a = jis2sj_code($code, $next);
-		put_maybe_fullwidth($enc_932->decode($a), 2);
+		put_decode_maybe_fullwidth($enc_932, $a, 2);
 	    }
 	    return;
 	}
@@ -932,7 +959,7 @@ sub process_GR_EucJP {
 	my $next2 = get($ofs + 2);
 	if ($next >= 0xa1 && $next <= 0xfe
 	    && $next2 >= 0xa1 && $next2 <= 0xfe) {
-	    put_maybe_fullwidth($enc_EJ->decode(chr($code) . chr($next). chr($next2)), 3);
+	    put_decode_maybe_fullwidth($enc_EJ, chr($code) . chr($next). chr($next2), 3);
 	    return;
 	}
     }
@@ -1237,9 +1264,9 @@ sub process_GR_UTF8 {
 		my $next = get($ofs + 1) & 0x7f;
 		if ($next >= 0x21 && $next <= 0x7e) {
 		    if ($output_cp932) {
-			put_maybe_fullwidth($enc_932->decode(jis2sj_code($c, $next)), 2);
+			put_decode_maybe_fullwidth($enc_932, jis2sj_code($c, $next), 2);
 		    } else {
-			put_maybe_fullwidth($enc_EJ->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
+			put_decode_maybe_fullwidth($enc_EJ, chr(0x80 | $c) . chr(0x80 | $next), 2);
 		    }
 		} else {
 		    put_decorate(".");
@@ -1248,7 +1275,7 @@ sub process_GR_UTF8 {
 	    when ('$D') {
 		my $next = get($ofs + 1) & 0x7f;
 		if ($next >= 0x21 && $next <= 0x7e) {
-		    put_maybe_fullwidth($enc_EJ->decode(chr(0x8f) . chr(0x80 | $c) . chr(0x80 | $next)), 2);
+		    put_decode_maybe_fullwidth($enc_EJ, chr(0x8f) . chr(0x80 | $c) . chr(0x80 | $next), 2);
 		    return;
 		} else {
 		    put_decorate(".");
@@ -1290,7 +1317,7 @@ sub process_GR_UTF8 {
 		if ($next >= 0x21 && $next <= 0x7e) {
 		    my $enc = get_encode_cache($G);
 		    if ($enc) {
-			put_maybe_fullwidth($enc->decode(chr(0x80 | $c) . chr(0x80 | $next)), 2);
+			put_decode_maybe_fullwidth($enc, chr(0x80 | $c) . chr(0x80 | $next), 2);
 		    } else {
 			put_invalid_fullwidth(2);
 		    }
@@ -1307,7 +1334,7 @@ sub process_GR_UTF8 {
 		    if ($enc) {
 			my $s = chr(0x8e) . chr(0xa1 + ord(substr($G, 1, 1)) - 0x47) .
 			  chr(0x80 | $c) . chr(0x80 | $next);
-			put_maybe_fullwidth($enc->decode($s), 2);
+			put_decode_maybe_fullwidth($enc, $s, 2);
 		    } else {
 			put_invalid_fullwidth(2);
 		    }
@@ -1327,7 +1354,7 @@ sub process_GR_UTF8 {
 			 || $c == 0x28
 			 || $c >= 0x2d && $c <= 0x2f
 			 || $c >= 0x6e)) {
-			put_maybe_fullwidth($enc->decode(chr(0x8f) . chr(0x80 | $c) . chr(0x80 | $next)), 2);
+			put_decode_maybe_fullwidth($enc, chr(0x8f) . chr(0x80 | $c) . chr(0x80 | $next), 2);
 			return;
 		    } else {
 			put_invalid_fullwidth(2);
@@ -1543,7 +1570,7 @@ sub process_GR_UTF8 {
 	    if ($next >= 0xa1 && $next <= 0xfe) {
 		my $s = chr($code) . chr($next);
 		$s = "\x8e\xa1$s" if $broken_euc_tw;
-		put_maybe_fullwidth($enc->decode($s), 2);
+		put_decode_maybe_fullwidth($enc, $s, 2);
 		return;
 	    }
 	}
@@ -1554,7 +1581,7 @@ sub process_GR_UTF8 {
 	    if ($next >= 0xa2 && $next <= 0xaf
 		&& $next1 >= 0xa1 && $next1 <= 0xfe
 		&& $next2 >= 0xa1 && $next2 <= 0xfe) {
-		put_normal($enc->decode(chr($code) . chr($next) . chr($next1) . chr($next2)), 2);
+		put_decode_maybe_fullwidth($enc, chr($code) . chr($next) . chr($next1) . chr($next2), 4);
 		return;
 	    }
 	}
@@ -1620,7 +1647,7 @@ sub process_GR_UTF8 {
 	      }
 	      die if length $s != scalar @mb_input_range;
 
-	      put_maybe_fullwidth($mb_input_enc->decode($s), length $s);
+	      put_decode_maybe_fullwidth($mb_input_enc, $s, length $s);
 	      return;
 	  }
 #	printf "mb: ofs %x considered out-of-range\n", $ofs;
