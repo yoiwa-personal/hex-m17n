@@ -2,34 +2,44 @@
 # -*- coding: utf-8 -*-
 # hex.pl version 0.30 - multi-locale hexadecimal dump tool
 # (c) 2016 Yutaka OIWA.
-# $Id: hex.pl,v 1.17 2016/09/11 01:03:51 yutaka Exp yutaka $
-
-use Encode qw(:default FB_QUIET);
-use utf8;
-use strict;
+# $Id: hex.pl,v 1.18 2016/09/19 09:33:10 yutaka Exp yutaka $
 
 use v5.10.0;
+use utf8;
+use strict;
+use FileHandle;
 use feature qw( switch unicode_strings );
 no if ($] >= 5.018), 'warnings', qw( experimental::smartmatch );
 
+use Encode qw(:default FB_QUIET);
+use Getopt::Long qw(:config bundling require_order);
+
 use constant ("is_DOSish", $^O =~ /^(?:MSWin32|cygwin|dos)\z/s);
 
-# debugging
+### debugging
+
 my $dlevel = 0;
 
 sub debug ();
+sub dsay ($@);
 
 BEGIN {
     if (scalar(grep{ m/^--debug(?:=.+)?$/ } @ARGV)) {
 	*debug = sub () { $dlevel };
+	*dsay = sub ($@) {
+	    print STDERR "DEBUG: " .
+	      (sprintf(shift @_, @_) =~ s/\n(?>.)/\n     | /r 
+	       =~ s/(?<!\n)\z/" (" . join(":",(caller())[1,2]) . ")\n"/esr )
+	};
 	eval 'use Data::Dumper;
               $Data::Dumper::Useqq = $Data::Dumper::Terse = 1;
               $Data::Dumper::Quotekeys = 0;'; die "$@" if "$@";
     } else {
         *debug = sub () { 0 };
-	*Dumper = sub (@) { die 'Dumper is not loaded (no debugging)' }
+	*Dumper = sub (@) { die 'Dumper is not loaded (no debugging)' };
+	*dsay = sub ($@) { 0 };
     }
-    # usage: debug&n&& printf(...);
+    # usage: debug&n&& dsay(...);
     # allocation of the bit flag <n>:
     #   2: encoding loading
     #   4: locale
@@ -39,16 +49,21 @@ BEGIN {
     # Without HEXDEBUG or --debug, the whole debugging code will be optimized out.
 }
 
+### global/shared and variables
+
 our $enc_SJ = find_encoding("Shift_JIS") // die;
 our $enc_932 = find_encoding("CP932") // die;
 our $enc_EJ = find_encoding("EUC-JP") // die;
 our $enc_U8 = find_encoding("UTF8") // die;
 
+use constant { BUFSIZE => 1024 };
+
+### configuration/environmental variables
+
+# locale environments
 our ($enc_locale, $locale_coding);
 our ($cjk_region);
-
-use constant { BUFSIZE => 1024 };
-use Getopt::Long qw(:config bundling require_order);
+our $is_tty = (-t STDOUT);
 
 # input byte handling
 our $addr = 0; # currently processing address in input
@@ -60,6 +75,9 @@ our $eof = undef;  # 1 if read function returns 0
 our $chreaten = 0;   # number of characters already processed
 our $chrforward = 0; # number of extra characters already emitted to output
 
+# input codec
+our ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
+
 # output
 our $binbuf = "";  # accumulator for binary dump
 our $chrbuf = "";  # accumulator for character dump
@@ -68,7 +86,6 @@ our $chrbuf = "";  # accumulator for character dump
 our $charbased = 0;
 our $textbased = 0;
 our $widthmethod = 0;
-our $is_tty = (-t STDOUT);
 our $incode = 'detect';
 our $outcode = 'detect';
 our $output_utf8 = 0;
@@ -80,6 +97,9 @@ our $use_control_pictures = 0;
 
 # terminal attributes
 our ($color_sequence_d, $color_sequence_f, $color_sequence_n, $color_colorful);
+
+
+# encodings
 
 our %codings = 
   ( 'binary'    => [ "Binary input (ASCII only)",
@@ -152,13 +172,12 @@ our %coding_aliases =
    'ic'     => 'iso2022',
   );
 
-our ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args);
-
-
 ### Main routine
 
 sub main () {
+
     # initialize
+
     GetOptions ("ascii|a"          => sub { set_input_coding('binary') },
 		"shift-jis|s"      => sub { set_input_coding('shiftjis') },
 		"euc-jp|ujis|e"    => sub { set_input_coding('eucjp') },
@@ -185,6 +204,9 @@ sub main () {
     if (defined $ARGV[1]) {
 	die "too many files specified.";
     }
+
+    # setting up
+
     if (!defined $ARGV[0] || $ARGV[0] eq '-') {
 	*IN = *STDIN{IO};
     } else {
@@ -193,6 +215,7 @@ sub main () {
     binmode(IN);
 
     set_output_coding($outcode);
+    debug&-1 and autoflush STDOUT 1;
 
     setup_color_sequences();
 
@@ -205,6 +228,12 @@ sub main () {
 
     {
 	my @a;
+	our %coding_schemes =
+	  ( # internal
+	   '2022:' => [\&process_GLR_2022, \&process_GLR_2022, \&process_C0_2022,  \&process_init_2022],
+	   'mb:'   => [\&process_GL_ASCII, \&process_GR_mb,    \&process_C0_ASCII, \&process_init_mb],
+	  );
+
 
 	if (ref($incode) eq 'ARRAY' && $incode->[0] eq 'iso2022') {
 	    @a = ('2022:', split(/ +/, $incode->[1]));
@@ -221,19 +250,12 @@ sub main () {
 	    shift @a;
 	}
 
-	if (ref $a[0]) {
-	    ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = @a;
-	} elsif ($a[0] eq '2022:') {
-	    shift @a;
-	    ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = 
-	      (\&process_GLR_2022, \&process_GLR_2022, \&process_C0_2022, \&process_init_2022, @a);
-	} elsif ($a[0] eq 'mb:') {
-	    shift @a;
-	    ($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = 
-	      (\&process_GL_ASCII, \&process_GR_mb, \&process_C0_ASCII, \&process_init_mb, @a);
-	} else {
-	    die "internal error: unknown coding system definition";
+	if (!ref $a[0]) {
+	    my $c = $coding_schemes{(shift @a)} ||
+	        die "internal error: unknown coding system definition";
+	    @a = (@$c, @a);
 	}
+	($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = @a;
     }
 
     &$process_init(@process_init_args) if defined $process_init;
@@ -405,11 +427,11 @@ sub detect_coding {
 	    'EUC-JP'
 	}
 	when (/\A(?:[\x00-\x7f]|
-		   [\xc2-\xdf][\x0x80-\xbf]|
-		   [\xe0-\xef][\x0x80-\xbf]{2}|
-		   [\xf0-\xf7][\x0x80-\xbf]{3}|
-		   [\xf8-\xfb][\x0x80-\xbf]{4}|
-		   [\xf8-\xfb][\x0x80-\xbf]{5}
+		   [\xc2-\xdf][\x80-\xbf]|
+		   [\xe0-\xef][\x80-\xbf]{2}|
+		   [\xf0-\xf7][\x80-\xbf]{3}|
+		   [\xf8-\xfb][\x80-\xbf]{4}|
+		   [\xfc-\xfd][\x80-\xbf]{5}
 	       )*.{0,5}\z/sx) {
 	    'UTF-8';
 	}
@@ -434,6 +456,8 @@ sub detect_coding {
 }
 
 ### output control
+
+### output: decoration
 
 our $chareaten = 0;
 our $charforward = 0;
@@ -575,7 +599,9 @@ sub uline_decorate {
 	    if (!$locale_coding && $^O eq 'MSWin32') {
 		require Win32;
 		my $CP = Win32::GetConsoleOutputCP();
-		if ($CP) {
+		if ($CP == 65001) {
+		    $locale_coding = "UTF-8";
+		} elsif ($CP) {
 		    $locale_coding = "cp$CP";
 		} else {
 		    $err = "Console codepage cannot be acquired";
@@ -586,18 +612,18 @@ sub uline_decorate {
 		if ($enc_locale = find_encoding($locale_coding)) {
 		    $locale_coding = $enc_locale->name();
 		    $locale_coding = 'utf-8' if $locale_coding == 'utf-8-strict';
-		    debug&4 and printf "LOCALE ENCODING: %s (%s)\n", $locale_coding, $l;
+		    debug&4 and dsay "LOCALE ENCODING: %s (%s)\n", $locale_coding, $l;
 		    detemine_cjk_region($locale_coding);
-		    debug&4 and printf "LOCALE ENCODING: %s (%s), REGION %s\n", $locale_coding, $l, $cjk_region;
+		    debug&4 and dsay "LOCALE ENCODING: %s (%s), REGION %s\n", $locale_coding, $l, $cjk_region;
 		} else {
 		    warn "Encoding of locale ($l) is not available\n";
 		    $locale_coding = undef;
 		    $enc_locale = undef;
-		    debug&4 and printf "LOCALE ENCODING: -- (%s)\n", $l;
+		    debug&4 and dsay "LOCALE ENCODING: -- (%s)\n", $l;
 		}
 	    } else {
 		warn $err;
-		debug&4 and printf "LOCALE ENCODING: --\n";
+		debug&4 and dsay "LOCALE ENCODING: --\n";
 	    }
 	    $inited = 1;
 	}
@@ -638,7 +664,7 @@ sub set_output_coding ($) {
     my ($enc_locale, $locale_coding) = determine_locale_encoding();
 
     if ($coding ne 'detect') {
-	debug&4 and print "requested output coding: $coding\n";
+	debug&4 and dsay "requested output coding: %s\n", $coding;
 	$outenc = find_encoding($coding) // die "Error: cannot find output coding $coding\n";
 	$coding = $outenc->name(); # canonify for possible coding-dependent tweaks
     } elsif ($locale_coding) {
@@ -661,7 +687,7 @@ sub set_output_coding ($) {
 	$output_utf8 = 0;
 	$output_cp932 = $coding eq 'cp932';
     }
-    debug&4 and printf "OUTPUT ENCODING: $coding\n";
+    debug&4 and dsay "OUTPUT ENCODING: %s\n", $coding;
     return;
 }
 
@@ -671,7 +697,7 @@ sub process_char {
     my ($ofs, $code) = (@_);
 
     if ($chreaten) {
-	#printf "ofs %x: eaten %d, forward %d\n", $ofs, $chreaten, $chrforward;
+	#dsay "ofs %x: eaten %d, forward %d\n", $ofs, $chreaten, $chrforward;
 	$chreaten--;
 	if ($chrforward) {
 	    $chrforward--;
@@ -792,7 +818,7 @@ sub process_GR_8859_1 {
 	$r = 0x80; # checked
 
 	if (!defined $charwidth_available) {
-	    debug&8 and printf("DEBUG: loading CharWidth\n");
+	    debug&8 and dsay("loading CharWidth\n");
 	    determine_locale_encoding();
 	    if (!$enc_locale) {
 		$charwidth_available = 0;
@@ -802,7 +828,7 @@ sub process_GR_8859_1 {
 		};
 		$charwidth_available = ! $@;
 	    }
-	    debug&8 and printf("DEBUG: loading CharWidth: result: %d\n", $charwidth_available);
+	    debug&8 and dsay("loading CharWidth: result: %d\n", $charwidth_available);
 	}
 
 	my $printable = ($char =~ /^\p{Print}$/);
@@ -811,15 +837,15 @@ sub process_GR_8859_1 {
 	my $skip_classcheck = 0;
 
 	if ($widthmethod == 0 && $charwidth_available) {
-	    debug&8 and printf("DEBUG: trying charwidth for U+%04x\n", $code);
+	    debug&8 and dsay("trying charwidth for U+%04x\n", $code);
 	    my $cc = "$char";
 	    my $s = $enc_locale->encode($cc, FB_QUIET);
 	    my $v = -1;
 	    if ($cc eq '' && length($s) >= 1) {
 		$v = Text::CharWidth::mbwidth($s);
-		debug&8 and printf("DEBUG: calling charwidth for %s -> %d\n", unpack("H*",$s), $v);
+		debug&8 and dsay("calling charwidth for %s -> %d\n", unpack("H*",$s), $v);
 	    } else {
-		debug&8 and printf("DEBUG: U+%04x does not encode: skipping\n", $code);
+		debug&8 and dsay("U+%04x does not encode: skipping\n", $code);
 	    }
 	    if ($v >= 0 && $v < 4) {
 		$r |= (0x20 | $v);
@@ -849,13 +875,13 @@ sub process_GR_8859_1 {
 	    my $s = $char;
 	    my $t = $outenc->encode($s, FB_QUIET);
 	    $r |= 0x10 if $printable && $s eq '' && length($t) >= 1;
-	    debug&8 and printf("check U+%04X -> %d %d %d\n", $code, $printable, $s eq '', length($t) >= 1);
+	    debug&8 and dsay("check U+%04X -> %d %d %d\n", $code, $printable, $s eq '', length($t) >= 1);
 	}
 
 	if ($code < 0x10000) {
 	    vec($chrattr_cache, $code, 8) = $r;
 	}
-	debug&8 and printf("DEBUG: checked code U+%x -> %b\n", $code, $r);
+	debug&8 and dsay("checked code U+%x -> %b\n", $code, $r);
 	return $r;
     }
 }
@@ -927,6 +953,7 @@ sub process_GR_SJIS {
 	    $o =   decode_char_maybe($enc_SJ, $s) unless $output_cp932;
 	    $o //= decode_char_maybe($enc_932, $s);
 	    defined $o ? put_normal($o, 2) : put_invalid_fullwidth(2);
+	    return;
 	}
     }
     process_GR_none(@_);
@@ -1014,11 +1041,11 @@ sub process_GR_UTF8 {
 
 	    my $s = pack("U", $c);
 	    if (is_printable_to_terminal($s)) {
-#		printf "debug: char %x is printable\n", $c;
+#		dsay "char %x is printable\n", $c;
 		my $outs = $s;
 		put_normal($s, $n);
 	    } else {
-#		printf "debug: char %x is NOT printable\n", $c;
+#		dsay "char %x is NOT printable\n", $c;
 		put_ucs_nonprintable($c, $n);
 	    }
 	    return;
@@ -1173,11 +1200,11 @@ sub process_GR_UTF8 {
 	    my $printname = $e->[2] || $name;
 
 	    if (ref $module eq 'CODE') {
-		debug&2 and	print "Info: Loading encoding '$name' (via func)\n";
+		debug&2 and dsay "Loading encoding '%s' (via func)\n", $name;
 		eval { &$module() };
 	    } else {
 		die unless $module =~ /\A[A-Za-z0-9-_:]+\z/;
-		debug&2 and	print "Info: Loadng extra encoding module $module\n";
+		debug&2 and dsay "Loadng extra encoding module %s\n", $module;
 		eval "require Encode::$module";
 	    }
 	    if ($@) {
@@ -1202,7 +1229,7 @@ sub process_GR_UTF8 {
 	    return $e;
 	} else {
 	    $enc = find_encoding($e) // die "Error: Can't load encoding $e";
-	    debug&2 and	print "Info: Loaded encoding $e\n";
+	    debug&2 and	dsay "Loaded encoding %s\n", $e;
 	    $encode_cache{$key} = $enc;
 	    return $enc;
 	}
@@ -1233,7 +1260,7 @@ sub process_GR_UTF8 {
 
 	my $c = $code & 0x7f;
 
-    #    printf "ofs %04x: plane %d, assign %s, code %02x (%02x)\n", $ofs, $plane, $G, $c, $code;
+    #    dsay "ofs %04x: plane %d, assign %s, code %02x (%02x)\n", $ofs, $plane, $G, $c, $code;
      #   $chrbuf .= sprintf("<%04x>>", $ofs);
 
 	if (($c == 0x20 || $c == 0x7f) && substr($G, 0, 1) ne ',') {
@@ -1378,7 +1405,7 @@ sub process_GR_UTF8 {
 
 	given ($code) {
 	    when ([0x0a, 0x0d, 0x0b, 0x00]) {
-		debug&4&& print "before: @GLR @G  tobe: @GLR_init @G_init reset=$reset_2022_status\n";
+		debug&4&& dsay "ISO2022-reset: before: %s %s tobe: %s %s reset=%s\n", "@GLR", "@G", "@GLR_init", "@G_init", $reset_2022_status;
 		if ($reset_2022_status == 1) {
 		    # workaround for half-binary data:
 		    # reset shift status of GL at each line-beginning
@@ -1388,7 +1415,7 @@ sub process_GR_UTF8 {
 		    @G = @G_init;
 		    @GLR = @GLR_init;
 		}
-		debug&4&& print "after: @GLR @G  tobe: @GLR_init @G_init reset=$reset_2022_status\n";
+		debug&4&& dsay "ISO2022-reset: before: %s %s tobe: %s %s reset=%s\n", "@GLR", "@G", "@GLR_init", "@G_init", $reset_2022_status;
 		process_C0_ASCII(@_);
 	    }
 	    when ([0x0e, 0x0f]) {
@@ -1442,7 +1469,7 @@ sub process_GR_UTF8 {
 			break if !$allow_UTF;
 			my $codeA = get($ofs + 2);
 			if ($codeA == 0x47) {
-			    #printf "ISO-2022 SEQUENCE at %x: go to UTF\n", $ofs;
+			    #dsay "ISO-2022 SEQUENCE at %x: go to UTF\n", $ofs;
 			    put_fill(1);
 			    $chreaten = 2; $chrforward = 0;
 			    # switch to UTF (with special return)
@@ -1496,7 +1523,7 @@ sub process_GR_UTF8 {
 			}
 		    }
 		    if ($n) {
-			#printf "ISO-2022 SEQUENCE %d: ofs %x, target G%d, assign %s\n", $n, $ofs, $target, $assign;
+			#dsay "ISO-2022 SEQUENCE %d: ofs %x, target G%d, assign %s\n", $n, $ofs, $target, $assign;
 			$G[$target] = $assign;
 			put_fill(1);
 			$chreaten = $n - 1;
@@ -1611,7 +1638,7 @@ sub process_GR_UTF8 {
 	    for (@a) {
 		m/^([0-9a-fA-F]{2})-([0-9a-fA-F]{2})\z/s or die "internal error: bad code spec";
 		my ($f, $t) = (hex($1), hex($2));
-#		printf "%d-%d: %02x-%02x\n", scalar(@mb_input_range), scalar(@o) / 2, $f, $t;
+#		dsay "%d-%d: %02x-%02x\n", scalar(@mb_input_range), scalar(@o) / 2, $f, $t;
 		die "internal error: bad code spec" if ($f > $t);
 		die "internal error: bad code spec" if (scalar(@mb_input_range) == 0 && $f < 0x80);
 		push @o, hex($1), hex($2);
@@ -1631,14 +1658,14 @@ sub process_GR_UTF8 {
 	      for my $n (0 .. (@mb_input_range - 1)) {
 		  my $c = get($ofs + $n) // last OUT_OF_RANGE;
 
-#		  printf "mb: ofs %x+%x, char %02x\n", $ofs, $n, $c;
+#		  dsay "mb: ofs %x+%x, char %02x\n", $ofs, $n, $c;
 		  my @r = @{$mb_input_range[$n]};
-#		  printf "mb: ofs %x+%x, spec %s\n", $ofs, $n, join("-", @r);
+#		  dsay "mb: ofs %x+%x, spec %s\n", $ofs, $n, join("-", @r);
 		  while (@r) {
 		      my ($f, $t) = (shift(@r), shift(@r));
-#		      printf "mb: ofs %x+%x, char %02x, range %02x-%02x\n", $ofs, $n, $c, $f, $t;
+#		      dsay "mb: ofs %x+%x, char %02x, range %02x-%02x\n", $ofs, $n, $c, $f, $t;
 		      if ($f <= $c && $c <= $t) {
-#			  printf "mb: ofs %x+%x, char %02x OK\n", $ofs, $n, $c;
+#			  dsay "mb: ofs %x+%x, char %02x OK\n", $ofs, $n, $c;
 			  $s .= chr($c);
 			  next SCAN;
 		      }
@@ -1650,7 +1677,7 @@ sub process_GR_UTF8 {
 	      put_decode_maybe_fullwidth($mb_input_enc, $s, length $s);
 	      return;
 	  }
-#	printf "mb: ofs %x considered out-of-range\n", $ofs;
+#	dsay "mb: ofs %x considered out-of-range\n", $ofs;
 	process_GR_none(@_);
     }
 }
@@ -1693,20 +1720,20 @@ sub get ($) {
       TESTING: {
 	    if (is_DOSish) {
 		$ansi_OK = 1;
-		debug&16&& print "ANSI sequence is assumed supported on DOSish platforms\n";
+		debug&16&& dsay "ANSI sequence is assumed supported on DOSish platforms\n";
 		last TESTING;
 	    }
 	    if ($ENV{LS_COLORS}) {
-		debug&16&& print "LS_COLORS exists.\n";
+		debug&16&& dsay "LS_COLORS exists.\n";
 		# check from LS_COLORS (trusting dircolors(1))
 		local $_ = ":$ENV{LS_COLORS}:";
 		if ((/:lc=/ && !/:lc=${reESC}\[:/) ||
 		    (/:rc=/ && !/:rc=m:/) ||
 		    (/:ec=/ && !/:ec=${reESC}\[0?m:/)) {
-		    debug&16 && print "non-ANSI code definition is found on LS_COLORS: skipping\n";
+		    debug&16 && dsay "non-ANSI code definition is found on LS_COLORS: skipping\n";
 		} else {
 		    if (/:([^:=]+=(([34]|[0-2][0-9]*);)*[34][0-9](;([34]|[0-2][0-9]*))*):/) {
-			debug&16 && print "LS_COLORS entry $1 seems to use ANSI sequence. trusting\n";
+			debug&16 && dsay "LS_COLORS entry %s seems to use ANSI sequence. trusting\n", $1;
 			$ansi_OK = 1;
 			last TESTING;
 		    };
@@ -1714,7 +1741,7 @@ sub get ($) {
 	    }
 	    # terminfo testing
 	    if (-x "/usr/bin/infocmp") {
-		debug&16&& do { print "trying terminfo.\n" };
+		debug&16&& dsay "trying terminfo.\n";
 		local $_ = qx(/usr/bin/infocmp -I 2>/dev/null); # -CTr
 		if (defined $_) {
 		    s/^#.*\n//gm;
@@ -1724,24 +1751,24 @@ sub get ($) {
 		    my %e = map { / *+([^=#]+)[=#](.*)\z/ ? ($1, $2) : ($_, '') } (split /, */s, $_);
 		    if (($e{AF} // $e{setaf}) =~ /^${reESC}\[3\%p1\%dm\z/s
 			&& ($e{AB} // $e{setab}) =~ /^${reESC}\[4\%p1\%dm\z/s) {
-			debug&16&& print "setaf/setab found as expected: ANSI OK\n";
+			debug&16&& dsay "setaf/setab found as expected: ANSI OK\n";
 			$ansi_OK = 1;
 			last TESTING;
 		    } elsif ($e{setaf} ne '' && $e{setab} ne '') {
-			debug&16&& print "setaf/setab found is not expected\n";
+			debug&16&& dsay "setaf/setab found is not expected\n";
 		    } else {
-			debug&16&& print "setaf/setab not found\n";
+			debug&16&& dsay "setaf/setab not found\n";
 		    }
 		}
 	    };
 	  TERMCAP_TESTING:
 	    {
-		debug&16&& print "trying termcap\n";
+		debug&16&& dsay "trying termcap\n";
 		eval {
 		    require Term::Cap;
 		};
 		if ($@) {
-		    debug&16&& print "Term::Cap is not available: $@\n";
+		    debug&16&& dsay "Term::Cap is not available: %s\n", $@;
 		    $term = undef;
 		    last TESTING;
 		}
@@ -1751,7 +1778,7 @@ sub get ($) {
 		    $term = Tgetent Term::Cap { OSPEED => 9600 };
 		};
 		if ($@) {
-		    debug&16&& print "tgetent is failed: $@\n";
+		    debug&16&& dsay "tgetent is failed: %s\n", $@;
 		    $term = '';
 		    last TERMCAP_TESTING;
 		}
@@ -1759,7 +1786,7 @@ sub get ($) {
 		my $ab = $term->Tputs('AB');
 		if ($af =~ /^\e\[3\%dm\z/s
 		    && $ab =~ /^\e\[4\%dm\z/s) {
-		    debug&16&& print "AF/AB found as expected: ANSI OK\n";
+		    debug&16&& dsay "AF/AB found as expected: ANSI OK\n";
 		    $ansi_OK = 1;
 		    last TESTING;
 		}
@@ -1777,7 +1804,7 @@ sub get ($) {
 	    my $u = $term->Tputs('us');
 	    my $e = $term->Tputs('me');
 	    if ($b && $u && $e) {
-		debug&16&& print "bold, underline, reset found\n";
+		debug&16&& dsay "bold, underline, reset found\n";
 		$e =~ s/\e\(B//;
 		$color_sequence_d = "$e$b$u";
 		$color_sequence_f = "$e$u";
@@ -1786,7 +1813,7 @@ sub get ($) {
 		return 1;
 	    }
 	}
-	debug&16&& print "bold, underline, reset not found ... dumb terminal?\n";
+	debug&16&& dsay "bold, underline, reset not found ... dumb terminal?\n";
 	$color_sequence_d = '';
 	$color_sequence_f = '';
 	$color_sequence_n = '';
