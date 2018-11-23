@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # hex.pl version 0.30 - multi-locale hexadecimal dump tool
 # (c) 2016 Yutaka OIWA.
-# $Id: hex.pl,v 1.18 2016/09/19 09:33:10 yutaka Exp yutaka $
+# $Id: hex.pl,v 1.19 2017/02/05 15:55:01 yutaka Exp yutaka $
 
 use v5.10.0;
 use utf8;
@@ -387,16 +387,16 @@ sub set_input_coding {
 }
 
 sub detect_coding {
-    # A few final bytes might be a partial sequences of
-    # multibyte sequences.  So, the patterns below contains
-    # .? or similar at the end.  Flag "s" allows \n to be
-    # matched with "." there.
+    # Several final bytes in the buffer might be a partial prefix of a
+    # multibyte character.  The patterns below contain /.?/ or similar
+    # patterns at the end to match these prefixes.  The "s" flag
+    # allows "\n" to be matched with /./ there.
 
     given ($_[0]) {
 	when (m#\e\$?[\$(-/][A-~\@]
 		[\x0e\x0f\x1b\x20-\x7e\x8e\x8f\xa0-\xff]+
 		(?:\e\([ABGHJ-LRTY\`afghiwx\@]|\n)#sx) {
-	    if (m|\e%G| && m|\e%@|) {
+	    if (m|\e%G|) {
 		'ISO-2022-U'
 	    } else {
 		'ISO-2022'
@@ -475,7 +475,7 @@ sub uline_decorate {
 	my ($dec, $smpl, $n) = @_;
 	$smpl //= ("." x length $_[0]);
 	$n //= length($smpl);
-	
+
 	if ($decorate == 1) {
 	    if ($curdecorate != 1) {
 		$chrbuf .= $color_sequence_d;
@@ -611,7 +611,7 @@ sub uline_decorate {
 		my $l = $locale_coding;
 		if ($enc_locale = find_encoding($locale_coding)) {
 		    $locale_coding = $enc_locale->name();
-		    $locale_coding = 'utf-8' if $locale_coding == 'utf-8-strict';
+		    $locale_coding = 'utf-8' if $locale_coding eq 'utf-8-strict';
 		    debug&4 and dsay "LOCALE ENCODING: %s (%s)\n", $locale_coding, $l;
 		    detemine_cjk_region($locale_coding);
 		    debug&4 and dsay "LOCALE ENCODING: %s (%s), REGION %s\n", $locale_coding, $l, $cjk_region;
@@ -675,7 +675,7 @@ sub set_output_coding ($) {
 	$coding = "UTF-8";
     }
     $coding = 'utf-8' if $coding eq 'utf-8-strict';
-    
+
     binmode (STDOUT);
     binmode (STDOUT, ":crlf") if is_DOSish;
     if ($coding =~ /\Autf-8\z/i) {
@@ -797,7 +797,7 @@ sub process_GR_8859_1 {
 {
     my $charwidth_available = undef;
 
-    my $chrattr_cache = "";
+    my $chrattr_cache = "\x00" x 32 . "\xf1" x 95; # preloading values for ASCII characters
     # 0x80 -> checked
     # 0x40 -> char printable class
     # 0x20 -> mbwidth available
@@ -811,9 +811,6 @@ sub process_GR_8859_1 {
 	if ($code < 0x10000) {
 	    my $r = vec($chrattr_cache, $code, 8);
 	    return $r if $r;
-	}
-	if ($code >= 0x20 && $code <= 0x7e) {
-	    return 0xf1; # ASCII shortcut
 	}
 	$r = 0x80; # checked
 
@@ -1154,8 +1151,8 @@ sub process_GR_UTF8 {
 	# Note: Technically, $B corresponds to jisx0208-raw, $C to KSC5601-raw, etc.
 	# We need to use FULLWIDTH variants for ASCII-conflicting characters, and
 	# current Perl implementation of *-raw encodings _actually_ does that,
-	# against the mapping definitions of Unicode Consortium.
-	# However, to make this doubly-sure for any future,
+	# against the mapping definitions provided by the Unicode Consortium.
+	# However, to make it doubly-sure for any future implementation changes,
 	# we use EUC-encoded tables here.
 
 	%I646table = 
@@ -1415,7 +1412,8 @@ sub process_GR_UTF8 {
 		    @G = @G_init;
 		    @GLR = @GLR_init;
 		}
-		debug&4&& dsay "ISO2022-reset: before: %s %s tobe: %s %s reset=%s\n", "@GLR", "@G", "@GLR_init", "@G_init", $reset_2022_status;
+		debug&4&& dsay "ISO2022-reset: before: %s %s tobe: %s %s reset=%s\n",
+		                 "@GLR", "@G", "@GLR_init", "@G_init", $reset_2022_status;
 		process_C0_ASCII(@_);
 	    }
 	    when ([0x0e, 0x0f]) {
@@ -1566,9 +1564,10 @@ sub process_GR_UTF8 {
     }
 
     sub load_euc_tw {
+	require Encode::HanExtra; # this line may cause a die if HanExtra is not avaiable
+
 	# EUC-TW is broken in current HanExtra;
 	# check it.
-	require Encode::HanExtra;
 
 	my $enc = find_encoding('euc-tw');
 	given (unpack("H*", $enc->encode("1 \x{4E00}"))) {
@@ -1577,7 +1576,7 @@ sub process_GR_UTF8 {
 		$broken_euc_tw = 0;
 	    }
 	    when ('31208ea1c4a1') {
-		# CNS-11643 is encoded as combined G2.  NG.
+		# CNS-11643-1 is encoded as combined G2.  NG.
 		$broken_euc_tw = 1;
 	    }
 	    default {
@@ -1586,7 +1585,7 @@ sub process_GR_UTF8 {
 	}
 	return;
     }
-    
+
     # put here because we need $broken_euc_tw
     sub process_GR_EucTW {
 	my ($ofs, $code) = (@_);
@@ -1772,7 +1771,7 @@ sub get ($) {
 		    $term = undef;
 		    last TESTING;
 		}
-		    
+
 		eval {
 		    local $ENV{PATH} = "/usr/bin"; # only to use /usr/bin/infocmp
 		    $term = Tgetent Term::Cap { OSPEED => 9600 };
@@ -1813,7 +1812,7 @@ sub get ($) {
 		return 1;
 	    }
 	}
-	debug&16&& dsay "bold, underline, reset not found ... dumb terminal?\n";
+	debug&16&& dsay "bold, underline, reset not found ... may be a dumb terminal\n";
 	$color_sequence_d = '';
 	$color_sequence_f = '';
 	$color_sequence_n = '';
@@ -1829,4 +1828,3 @@ sub load {
 }
 
 caller() ? load() : main();
-
