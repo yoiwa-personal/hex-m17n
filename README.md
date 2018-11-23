@@ -3,7 +3,7 @@
 hex : multi-locale hexadecimal dump tool
 ========================================
 
-(c) 2016 Yutaka OIWA.
+(c) 2016-2018 Yutaka OIWA.
 
 ## 1. Overview
 

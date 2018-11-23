@@ -1,8 +1,7 @@
 #!/usr/bin/perl -C0
 # -*- coding: utf-8 -*-
-# hex.pl version 0.30 - multi-locale hexadecimal dump tool
-# (c) 2016 Yutaka OIWA.
-# $Id: hex.pl,v 1.19 2017/02/05 15:55:01 yutaka Exp yutaka $
+# hex.pl version 1.0 - multi-locale hexadecimal dump tool
+# (c) 2016-2018 Yutaka OIWA.
 
 use v5.10.0;
 use utf8;
