@@ -142,21 +142,22 @@ fillers are replaced with more descriptive "marks":
 
 ````````````````````````````````````````````````````````````
 
-On the colored terminal, the characters marked by "^" is shown as
-cyan-on-blue decorated mark.  Here, the mark "Z" correspond to the
-code of "control-Z" = 1a (hexadecimal).  Similarly, "A"
-corresponds to 01, "@" to 00, respectively.  If the script cannot
+On the colored terminal, the characters marked by ``^`` is shown as
+cyan-on-blue decorated mark.  Here, the mark ``Z`` correspond to the
+code of "control-Z" = 1a (hexadecimal).  Similarly, ``A``
+corresponds to 01, ``@`` to 00, respectively.  If the script cannot
 detect that terminal supports coloring, or the output is
 redirected to non-terminal (assuming "less" or something there),
-the mark is shown in bold-underlined, instead.  The option "-d"
+the mark is shown in bold-underlined, instead.  The option ``-d``
 forces decorated output to a non-terminal output, and the option
-"-p" forces "plain", non-decorated output.  (Hint: option "-d" can
-be useful with pagers supporting coloring sequences, e.g. "less -R".)
+``-p`` forces "plain", non-decorated output.  (Hint: option ``-d`` can
+be useful with pagers supporting coloring sequences, e.g.
+``less -R`` or ``lv -c``.)
 
 If the input contains wide characters, or input contains a
 multi-byte sequence which corresponds to a single character, the
 character dump output is adjusted to reflect that.  For example,
-if the input is "Japanese 日本語-Nihongo is supported." in UTF-8,
+if the input is ``Japanese 日本語-Nihongo is supported.`` in UTF-8,
 the output becomes as follows:
 
 ````````````````````````````````````````````````````````````````
@@ -172,9 +173,9 @@ the output becomes as follows:
 
    * The character 語 (e8 aa 9e) appears at the very end of the line.
      The half of the character is hanged out to the right of
-     character dump (see the position of last character "u" in the
+     character dump (see the position of last character ``u`` in the
      second line), and the location of the immediately following
-     character "-" is also adjusted in the beginning of the next
+     character ``-`` is also adjusted in the beginning of the next
      line.
 
 If the output is colored, a cyan "space-filler line" is put to
@@ -308,13 +309,13 @@ and "less"-friendly output format (using backspaces).
 
 ## Appendix A:  the brief description of "undocumented" options.
 
-Please do not use these in general cases, as it might be either
-changed, extended or deleted in future releases.
+Please do not use these options in general cases, as it might be
+changed, extended or removed in future releases.
 
  *  ``--no-reset-status``:
 
     "Hex" treats ISO-2022 input as slightly deviated from its
-    standard.  To avoid never-ending "Mojibakes" caused by
+    standard.  To avoid never-ending "mojibakes" caused by
     non-intended, unlucky occurrence of the escape sequences, our
     decoder forcibly resets a part of ISO-2022 shift status on some
     terminal control characters, such as CR, LF or NUL.  The
@@ -334,7 +335,7 @@ changed, extended or deleted in future releases.
     space.  This options let "hex" use these characters for "character
     dumps".  However, be notified that many fonts does not implement
     these characters and make its output may become less useful than
-    before.  in `-c`` mode, control characters with two-character
+    before.  in ``-c`` mode, control characters with two-character
     mnemonics are displayed by ASCII characters, not using the
     combined symbols.  ``--use-control-pictures=2`` uses non-standard
     two-character variant (NU and D1 for example) for all ASCII
@@ -350,24 +351,63 @@ changed, extended or deleted in future releases.
     taken from the current locale name, name of terminal character
     sets in the locale, and Windows code pages.  This option overrides
     the detected language environment.  The valid values are currently
-    "JP", "KR", "CN", "TW", and "-" (neutral).
+    ``JP``, ``KR``, ``CN``, ``TW``, and ``-`` (neutral).
 
- *  ``--debug``
+ *  ``-i'iso2022(spec)'``:
+
+    Detailed ISO-2022-based encoding can be specified by
+	extended ``-i`` option.
+	The spec is a space-separated sequence of the following elements.
+	
+	First, there may be zero or more of following flags:
+
+	 * ``:noLS``: Ignore locking shifts.
+	 * ``:noSS``: Ignore single shifts.
+	 * ``:nodesignate``: ignore any character-set designations.
+	 * ``:noshift``: Ignore both locking shifts and single shifts.
+	 * ``:fixed``: Ignore all shifts and designations.
+	 * ``:noreset``: Designations will not be reset on every line starts.
+	   Same as ``--no-reset-status`` option.
+	 * ``utf_ok``: Shift sequence to UTF-8 coding is understood.
+
+    Next, there may be optionally one or two specifiers for initial shifts:
+	each digits from ``0`` to ``3`` means G0 to G3, respectively, is
+	shifted initially to GL / GR.
+	If omitted, ``0 1`` (G0 to GL, G1 to GR) is assumed.
+
+    Finally, there must be one to four four character set designations,
+	which are corresponding to G0 to G3 respectively.
+	Each character set designation means:
+
+     * a single character between `@` and `~`: a 94-character set,
+	   whose "final byte" is corresponding ascii character code,
+	   is selected.
+	 * `$` + a single character: a 94²-character set is selected.
+	 * `,` + a single character: a 96-character set is selected.
+
+    Some examples are as follows:
+
+     * `-i'iso-2022(:fixed B $A)'` is the same as `EUC-CN`.
+     * `-i'iso-2022(:fixed B ,A)'` is the same as `ISO-8859-1`.
+	 * `-i'iso-2022(:fixed @)` is obsolete ISO-646-IRV.
+	 * `-i'iso-2022(:nodesignate :noLS B $B I $D)` is the same as `EUC-JP`.
+	 * `-i'iso-2022(:fixed J I)` is `JIS X0201`.
+
+ *  ``--debug``:
 
     It's a debug option.  It will not be documented even in this
     appendix, but one note: To make easy to find correspondence
     between debug messages and binary inputs (and its corresponding
     output), the debug messages of this "hex" script is intentionally
     directed to standard output (stdout), not to standard error output
-    (stderr).  This means that, "--debug" must not be used when output
+    (stderr).  This means that, ``--debug`` must not be used when output
     is used by some other programs for automated processing.
-
 
 ## Appendix B: known issues (including "by-design" non-issues)
 
  * ISO-2022 based encodings do not preserve locale "origins" of
    input characters: the similar characters in different codesets
-   (for example, A-acutes in Latin-1 and Latin-2, or "、" in
+   (for example, ``Á`` in Latin-1 and Latin-2, or ``、`` in
    JIS X0208, KSC 5601, GB2312 and CNS11643).
    These are mapped to the same internal coding points based on
    ISO 10646-1.

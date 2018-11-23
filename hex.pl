@@ -185,7 +185,7 @@ sub main () {
 		"iso-2022-jp|jis|junet|j" => sub { set_input_coding('jis') },
 		"input-coding|i=s" => \&set_input_coding,
 		"output-coding=s"  => \$outcode,
-		"list-coding"      => \&list_input_coding,
+		"list-codings"     => \&list_input_coding,
 		"decorate|d!"      => \$decorate,
 		"plaintext|p"      => sub { $decorate = 0 },
 		"char|c:1"         => \$charbased,
@@ -329,7 +329,7 @@ Options:
                       (default : to guess)
 
   --input-coding=<coding> -i : set input coding
-  --list-coding              : show the list of accepted input codings
+  --list-codings             : show the list of accepted input codings
 
   --decorate    -d  : use colorized output (default if output is tty)
   --no-decorate -p  : use plain-text output
@@ -381,7 +381,7 @@ sub set_input_coding {
     $c = $coding_aliases{$c} if exists $coding_aliases{$c};
     unless (exists $codings{$c}) {
 	usage("unknown coding: $coding ($c)" .
-	      (@_ == 2 ? "\n  (try --list-coding for accepted values)" : ""));
+	      (@_ == 2 ? "\n  (try --list-codings for accepted values)" : ""));
     }
     $incode = $c;
 }
