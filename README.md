@@ -55,45 +55,41 @@ short summary of (a part of) currently supported encoding schemes.
 
  * For Latin-based languages and language-neutral binaries:
 
-         -iascii, -ibinary      ASCII      (ISO-646-US)
-         -il1, -iISO8859-1      ISO-8859-1 (also known as Latin-1)
-         -iu, -u, -iutf-8       UTF-8      (Unicode)
+         -iascii, -ibinary                     ASCII      (ISO-646-US)
+         -il1, -iISO8859-1                     ISO-8859-1 (also known as Latin-1)
+         -iu, -u, -iutf-8                      UTF-8      (Unicode)
 
  * For Japanese
 
-         -iej, -e, -iEUC-JP     EUC-JP
-         -isj, -s, -ishift_JIS  Shift_JIS
-         -iij, -ij, -j, -ijis,
-                -iISO-2822-JP   ISO-2022-JP (aka "jis" or "junet")
-         -iu, -u, -iutf-8       UTF-8      (Unicode)
+         -iej, -e, -iEUC-JP                    EUC-JP
+         -isj, -s, -ishift_JIS                 Shift_JIS
+         -iij, -ij, -j, -ijis, -iISO-2822-JP   ISO-2022-JP (aka "jis" or "junet")
+         -iu, -u, -iutf-8                      UTF-8      (Unicode)
 
  * For Korean
 
-         -iek, -iEUC-KR         EUC-KR     (KS X 1001)
-         -iik, -i2022,
-               -iISO-2022       ISO-2022-KR
-         -iu, -u, -iutf-8       UTF-8      (Unicode)
+         -iek, -iEUC-KR                        EUC-KR     (KS X 1001)
+         -iik, -i2022, -iISO-2022              ISO-2022-KR
+         -iu, -u, -iutf-8                      UTF-8      (Unicode)
 
  * For Simplified Chinese (Mainland China)
 
-         -iec, -igb2312,
-                -iEUC-CN        EUC-CN
-         -iic, -i2022,
-                -iISO-2022      ISO-2022-CN
-         -iu, -u, -iutf-8       UTF-8      (Unicode)
+         -iec, -igb2312, -iEUC-CN              EUC-CN
+         -iic, -i2022, -iISO-2022              ISO-2022-CN
+         -iu, -u, -iutf-8                      UTF-8      (Unicode)
 
  * For Traditional Chinese (Taiwan)
 
-         -ib5, -ibig5           Big5-ETEN
-         -iEUC-TW               EUC-TW (CNS 11643 based)
-             [Perl module Encode::HanExtra needed]
-         -iu, -u, -iutf-8       UTF-8      (Unicode)
+         -ib5, -ibig5                          Big5-ETEN
+         -iEUC-TW                              EUC-TW (CNS 11643 based)
+                             [Perl module Encode::HanExtra needed]
+         -iu, -u, -iutf-8                      UTF-8      (Unicode)
 
  * For multilingual texts
 
-         -iu, -u, -iutf-8       UTF-8      (Unicode)
-         -i2022, -iISO-2022     ISO-2022   (shift-sequence based generic encoding)
-         -iISO-2022-U           ISO-2022/UTF-8 (switched by special sequence)
+         -iu, -u, -iutf-8                      UTF-8      (Unicode)
+         -i2022, -iISO-2022                    ISO-2022   (shift-sequence based generic encoding)
+         -iISO-2022-U                          ISO-2022/UTF-8 (switched by special sequence)
 
 Note: if you use this script from another programs automatically,
 please specify the full encoding name shown as last one in the
@@ -316,17 +312,18 @@ changed, extended or removed in future releases.
 
     "Hex" treats ISO-2022 input as slightly deviated from its
     standard.  To avoid never-ending "mojibakes" caused by
-    non-intended, unlucky occurrence of the escape sequences, our
-    decoder forcibly resets a part of ISO-2022 shift status on some
-    terminal control characters, such as CR, LF or NUL.  The
-    --no-reset-status inhibits this non-standard behavior.  It may be
-    useful to handle "correct" input of ISO-2022 which uses shift
-    status over multiple lines.  However, many "ISO-2022-**" encoding
-    schemes *does not* require this option, because these are defined
-    so that each lines of input can be decoded separately.  On the
-    contrary, the input handling will become so unstable on the
-    badly-encoded input, especially against a single-byte SI (0x0e) in
-    the input.
+    unintended, unlucky occurrence of some escape sequences, our
+    decoder forcibly resets part of ISO-2022 shift status on some
+    control characters which seems to mean end-of-data, such as CR, LF or NUL.
+    The ``--no-reset-status`` option inhibits this non-standard behavior.
+
+    It may be useful to handle "correct" input of ISO-2022 which uses shift
+    status over multiple lines.
+    However, many encoding schemes named "ISO-2022-..." *do not* require
+    this option, because those are define in the way that each lines of input
+    can be decoded separately.  Also, enabling this option makes input 
+    handling quite unstable with badly-encoded inputs, especially
+    against a single-byte SI (0x0e) in the input.
 
  *  ``--use-control-pictures``:
 
@@ -389,9 +386,12 @@ changed, extended or removed in future releases.
 
      * `-i'iso-2022(:fixed B $A)'` is the same as `EUC-CN`.
      * `-i'iso-2022(:fixed B ,A)'` is the same as `ISO-8859-1`.
-	 * `-i'iso-2022(:fixed @)` is obsolete ISO-646-IRV.
-	 * `-i'iso-2022(:nodesignate :noLS B $B I $D)` is the same as `EUC-JP`.
-	 * `-i'iso-2022(:fixed J I)` is `JIS X0201`.
+     * `-i'iso-2022(:fixed @)'` is obsolete ISO-646-IRV.
+     * `-i'iso-2022(:nodesignate :noLS B $B I $D)'` is the same as `EUC-JP`.
+     * `-i'iso-2022(:fixed J I)'` is JIS X 0201.
+
+    Single quotes around the spec is required by POSIX (Unix-like) shells.
+    Other operating environments may require another style of quotings.
 
  *  ``--debug``:
 
