@@ -88,6 +88,10 @@ short summary of (a part of) currently supported encoding schemes.
  * For multilingual texts
 
          -iu, -u, -iutf-8                      UTF-8      (Unicode)
+         -iutf-16-be                           UTF-16-BE  (Big-endian Unicode)
+         -iutf-16-le                           UTF-16-LE  (Little-endian Unicode)
+         -iutf-32-be                           UTF-32-BE  (Big-endian Unicode)
+         -iutf-32-le                           UTF-32-LE  (Little-endian Unicode)
          -i2022, -iISO-2022                    ISO-2022   (shift-sequence based generic encoding)
          -iISO-2022-U                          ISO-2022/UTF-8 (switched by special sequence)
 

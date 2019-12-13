@@ -15,7 +15,7 @@ use Getopt::Long qw(:config bundling require_order);
 
 use constant ("is_DOSish", $^O =~ /^(?:MSWin32|cygwin|dos)\z/s);
 
-our $VERSION = "1.0.1";
+our $VERSION = "1.1.0";
 
 ### debugging
 
@@ -142,6 +142,14 @@ our %codings =
 		qw(mb: big5 a1-c6,c9-f9 40-7e,a1-fe) ],
     'euctw' => [ "EUC-TW (Taiwan - ROC, CNS-11643)",
 		 \&process_GL_ASCII,  \&process_GR_EucTW, \&process_C0_ASCII, \&process_init_eucTW ],
+    'utf16le' => [ "UTF-16-LE",
+		 \&process_UTF_1632, \&process_UTF_1632, \&process_UTF_1632, \&process_init_UTF_1632, 2, 1 ],
+    'utf16be' => [ "UTF-16-BE",
+		 \&process_UTF_1632, \&process_UTF_1632, \&process_UTF_1632, \&process_init_UTF_1632, 2, 0 ],
+    'utf32le' => [ "UTF-32-LE",
+		 \&process_UTF_1632, \&process_UTF_1632, \&process_UTF_1632, \&process_init_UTF_1632, 4, 1 ],
+    'utf32be' => [ "UTF-32-BE",
+		 \&process_UTF_1632, \&process_UTF_1632, \&process_UTF_1632, \&process_init_UTF_1632, 4, 0 ],
     'detect'    => [ "Automatic detection" ],
   );
 
@@ -391,7 +399,22 @@ sub detect_coding {
     # patterns at the end to match these prefixes.  The "s" flag
     # allows "\n" to be matched with /./ there.
 
-    given ($_[0]) {
+    local $_ = $_[0];
+
+    # check for UTF-16/32 by statistics;
+    # BOM not used for avoid mis-detecting some ISO-8859-* docs as UTF-16.
+    # After statistical detection, we do not need to rely on BOM anymore.
+    my @cnt = (0, 0, 0, 0);
+    my $len = length $_;
+    for (my $i = 0; $i < $len; $i++) {
+	$cnt[$i % 4]++ if ord(substr($_, $i, 1)) == 0;
+    }
+    for my $i (@cnt) {
+	$i = $i * 80 < $len ? "F" : $i * 5 > $len ? "Z" : "-";
+	# F: NUL byte is less than 1/10; Z: NUL byte is more than 4/5
+    }
+    my $UTF_sig = join("", @cnt);
+    given ($_) {
 	when (m#\e\$?[\$(-/][A-~\@]
 		[\x0e\x0f\x1b\x20-\x7e\x8e\x8f\xa0-\xff]+
 		(?:\e\([ABGHJ-LRTY\`afghiwx\@]|\n)#sx) {
@@ -400,6 +423,18 @@ sub detect_coding {
 	    } else {
 		'ISO-2022'
 	    }
+	}
+	when ($UTF_sig eq 'FZFZ') {
+	    'UTF-16-LE'
+	}
+	when ($UTF_sig eq 'ZFZF') {
+	    'UTF-16-BE'
+	}
+	when ($UTF_sig eq 'FZZZ' || $UTF_sig eq 'F-ZZ') {
+	    'UTF-32-LE'
+	}
+	when ($UTF_sig eq 'ZZZF' || $UTF_sig eq 'ZZ-F') {
+	    'UTF-32-BE'
 	}
 	when (/\A(?:[\x00-\x7f])*\z/sx) {
 	    'ASCII'
@@ -1046,6 +1081,80 @@ sub process_GR_UTF8 {
     }
     process_GR_none(@_);
 }
+
+{
+    my $little_endian = 0;
+    my $width = 2;
+
+    sub process_UTF_1632 {
+	my ($ofs, $code) = (@_);
+	my $w = $width;
+	for (my $i = 1; $i < $width; $i++) {
+	    my $next = get($ofs + $i);
+	    if (! defined $next) {
+		put_invalid_fullwidth($i);
+		return;
+	    }
+	    if ($little_endian) {
+		$code = $code | ($next << ($i * 8))
+	    } else {
+		$code = ($code << 8) | $next;
+	    }
+	}
+	#dsay("ofs=%#x, code=%#x", $ofs, $code);
+	if ($code >= 0x110000 || ($code >= 0xdc00 && $code <= 0xdfff)) { # out of the range
+	    put_invalid_fullwidth($width);
+	    return;
+	}
+	if ($code >= 0xd800 && $code <= 0xdbff) {
+	    # high surrogate
+	    if ($width == 4) {
+		put_invalid_fullwidth($width);
+		return;
+	    }
+	    my $next1 = get($ofs + 2);
+	    if (! defined $next1) {
+		put_invalid_fullwidth(2);
+		return;
+	    }
+	    my $next2 = get($ofs + 3);
+	    if (! defined $next2) {
+		put_invalid_fullwidth(3);
+		return;
+	    }
+	    my $code2 = $little_endian ? ($next2 << 8 | $next1) : ($next1 << 8 | $next2);
+	    unless ($code2 >= 0xdc00 && $code2 <= 0xdfff) {
+		put_invalid_fullwidth(2);
+		return;
+	    }
+	    $code = (($code & 0x3ff) << 10 | $code2 & 0x3ff) + 0x10000;
+	    $w = 4;
+	}
+	if ($code == 0xfeff && $ofs == 0) {
+	    # BOM at the beginning
+	    put_fill(1);
+	    $chreaten = $w - 1;
+	    return;
+	}
+	if ($code <= 32 || $code == 0x7f) {
+	    process_C0_ASCII($ofs, $code);
+	    $chreaten = $width - 1; $chrforward = 0;
+	    return;
+	}
+	my $s = pack("U", $code);
+	if (is_printable_to_terminal($s)) {
+	    put_normal($s, $w);
+	} else {
+	    put_ucs_nonprintable($code, $w);
+	}
+	return;
+    }
+
+    sub process_init_UTF_1632 {
+	($width, $little_endian) = @_;
+    }
+}
+
 
 ### input processing: ISO/IEC 2022 and compliant encodings
 
