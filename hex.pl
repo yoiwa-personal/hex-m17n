@@ -1,6 +1,6 @@
 #!/usr/bin/perl -C0
 # -*- coding: utf-8 -*-
-# hex.pl version 1.0 - multi-locale hexadecimal dump tool
+# hex.pl - multi-locale hexadecimal dump tool
 # (c) 2016-2018 Yutaka OIWA.
 
 use v5.10.0;
@@ -15,6 +15,8 @@ use Getopt::Long qw(:config bundling require_order);
 
 use constant ("is_DOSish", $^O =~ /^(?:MSWin32|cygwin|dos)\z/s);
 
+our $VERSION = "1.0.1";
+
 ### debugging
 
 my $dlevel = 0;
@@ -27,7 +29,7 @@ BEGIN {
 	*debug = sub () { $dlevel };
 	*dsay = sub ($@) {
 	    print STDERR "DEBUG: " .
-	      (sprintf(shift @_, @_) =~ s/\n(?>.)/\n     | /r 
+	      (sprintf(shift @_, @_) =~ s/\n(?>.)/\n     | $1/gr
 	       =~ s/(?<!\n)\z/" (" . join(":",(caller())[1,2]) . ")\n"/esr )
 	};
 	eval 'use Data::Dumper;
@@ -134,13 +136,12 @@ our %codings =
     'iso885916' => [ "ISO 8859-16 (Latin-10)", qw(2022: :fixed B ,f) ],
     'euccn' => [ "EUC-CN (China (PRC), GB 2312)",
 		  qw(2022: :fixed B $A) ],              # (mb: euc-cn a1-fe a1-fe)
-    'euckr' => [ "EUC-KR (South Korean, KS X 1001)",
+    'euckr' => [ "EUC-KR (South Korea, KS X 1001)",
 		  qw(2022: :fixed B $C) ],
     'big5' => [ "Big-5 (Taiwan - ROC)",
 		qw(mb: big5 a1-c6,c9-f9 40-7e,a1-fe) ],
-    'euctw' => [ "EUC-TW (Taiwan -ROC, CNS-11643)",
+    'euctw' => [ "EUC-TW (Taiwan - ROC, CNS-11643)",
 		 \&process_GL_ASCII,  \&process_GR_EucTW, \&process_C0_ASCII, \&process_init_eucTW ],
-
     'detect'    => [ "Automatic detection" ],
   );
 
@@ -351,14 +352,13 @@ sub list_input_coding {
 	$r{$coding_aliases{$_}} //= [];
 	push @{$r{$coding_aliases{$_}}}, $_;
     }
-    
+
     print "List of supported input codings:\n";
 
     for (sort(keys(%codings))) {
 	printf("  %-13s: %s\n", $_, $codings{$_}->[0]);
-	printf("        %s\n", 
-	       "(" . 
-	       (@{$r{$_}} >= 2 ? "aliases" : "alias") .
+	printf("      %s\n",
+	       (@{$r{$_}} >= 2 ? "(aliases" : "  (alias") .
 	       " : " .
 	       join(", ", @{$r{$_}}) . ")") if $r{$_};
     }
@@ -457,9 +457,6 @@ sub detect_coding {
 ### output control
 
 ### output: decoration
-
-our $chareaten = 0;
-our $charforward = 0;
 
 sub uline_decorate {
     local $_ = $_[0];
@@ -566,7 +563,7 @@ sub uline_decorate {
 	} else {
 	    $chrbuf .= $o;
 	}
-	$chrforward = $chareaten if $charforward > $chareaten;
+	$chrforward = $chreaten if $chrforward > $chreaten;
 	# output wider than available:
 	# happens when ISO-8859-1 (or similar) is dumped to
 	# CJK-width terminals.
@@ -719,7 +716,7 @@ sub process_char {
 my @C0_abbrs;
 BEGIN {
     @C0_abbrs = 
-      ('\0^A^B^C^D^E^F\a\b\t\n\v\f\r^N^O^P^Q^R^S^T^U^U^V^W^X^Y^Z^[^\^]^^sp^?',
+      ('\0^A^B^C^D^E^F\a\b\t\n\v\f\r^N^O^P^Q^R^S^T^U^V^W^X^Y^Z^[^\^]^^^_sp^?',
        '                BSHTLFVTFFCRSOSI                  EM    FSGSRSUSSP  ',
        'NUSHSXEXETEQAKBLBSHTLFVTFFCRSOSIDED1D2D3D4NKSNEBCNEMSBECFSGSRSUSSPDL') ; # non-standard
 }
