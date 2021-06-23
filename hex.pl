@@ -15,7 +15,7 @@ use Getopt::Long qw(:config bundling require_order);
 
 use constant ("is_DOSish", $^O =~ /^(?:MSWin32|cygwin|dos)\z/s);
 
-our $VERSION = "1.1.0";
+our $VERSION = "1.1.1";
 
 ### debugging
 
@@ -33,10 +33,10 @@ BEGIN {
 	       =~ s/(?<!\n)\z/" (" . join(":",(caller())[1,2]) . ")\n"/esr )
 	};
 	eval 'use Data::Dumper;
-              $Data::Dumper::Useqq = $Data::Dumper::Terse = 1;
-              $Data::Dumper::Quotekeys = 0;'; die "$@" if "$@";
+	      $Data::Dumper::Useqq = $Data::Dumper::Terse = 1;
+	      $Data::Dumper::Quotekeys = 0;'; die "$@" if "$@";
     } else {
-        *debug = sub () { 0 };
+	*debug = sub () { 0 };
 	*Dumper = sub (@) { die 'Dumper is not loaded (no debugging)' };
 	*dsay = sub ($@) { 0 };
     }
@@ -260,7 +260,7 @@ sub main () {
 
 	if (!ref $a[0]) {
 	    my $c = $coding_schemes{(shift @a)} ||
-	        die "internal error: unknown coding system definition";
+		die "internal error: unknown coding system definition";
 	    @a = (@$c, @a);
 	}
 	($process_GL, $process_GR, $process_C0, $process_init, @process_init_args) = @a;
@@ -289,7 +289,7 @@ sub main () {
 	unless ($charbased || $textbased) {
 	    $binbuf = substr($binbuf . (" "x48), 0, 50) if length $binbuf < 50;
 	}
-	put_normal("", 0) unless $textbased;
+	decorate_0() unless $textbased;
 	if ($textbased) {
 	    print $chrbuf                                       or last;
 	} else {
@@ -304,7 +304,7 @@ sub main () {
     # cleaning up
 
     $chrbuf = "";
-    put_normal("", 0); # if $textbased
+    decorate_0(); # if $textbased
     print "$chrbuf";
 
     close STDOUT or die "Write failed: $!"; # catch any errors
@@ -491,7 +491,7 @@ sub detect_coding {
 
 ### output control
 
-### output: decoration
+### low_level: decoration
 
 sub uline_decorate {
     local $_ = $_[0];
@@ -502,17 +502,67 @@ sub uline_decorate {
 {
     my $curdecorate = 0;
 
-    sub put_decorate {
-	my ($dec, $smpl, $n) = @_;
-	$smpl //= ("." x length $_[0]);
-	$n //= length($smpl);
+    sub decorate_0 () {
+	if ($curdecorate != 0) {
+	    $chrbuf .= $color_sequence_n;
+	    $curdecorate = 0;
+	}
+    }
 
+    sub decorate_1 () {
 	if ($decorate == 1) {
 	    if ($curdecorate != 1) {
 		$chrbuf .= $color_sequence_d;
 		$curdecorate = 1;
 	    }
 	}
+    }
+
+    sub decorate_2 () {
+	if ($decorate == 1) {
+	    if ($curdecorate != 2) {
+		$chrbuf .= $color_sequence_f;
+		$curdecorate = 2;
+	    }
+	}
+    }
+
+    sub low_put_fill () {
+	return if $textbased;
+	if ($decorate == 1) {
+	    decorate_2();
+	    if ($color_colorful) {
+		$chrbuf .= ($charbased ? "__ " : "_");
+	    } else {
+		$chrbuf .= ($charbased ? "   " : " ");
+	    }
+	} else {
+	    $chrbuf .= ($charbased ? "   " : " ");
+	}
+    }
+}
+
+# mid-level: emit specific style of output, considering characters
+
+{
+    # put_fill(n): emit a filler for an n-octet invisible sequence
+    sub put_fill ($) {
+	my ($n) = @_;
+	low_put_fill ();
+	$chreaten += $n - 1;
+    }
+
+    # put_decorate(d, s, n):
+    #   show decorated string "d" for an n-octet input.
+    #   if not decoratable, use s (default: dots of d's characters)
+    #   if n omitted: characters of d
+
+    sub put_decorate {
+	my ($dec, $smpl, $n) = @_;
+	$smpl //= ("." x length $dec);
+	$n //= length($smpl);
+
+	decorate_1();
 	if ($charbased) {
 	    my $ld = length($dec);
 	    $ld++ if $dec =~ /\p{Ea: W}|\p{Ea: F}/;
@@ -521,7 +571,7 @@ sub uline_decorate {
 	    $chrbuf .= uline_decorate($dec);
 	    if ($sp) {
 		$chrbuf .= uline_decorate(" " x ($sp - 1));
-		put_normal("", 0);
+		decorate_0();
 		$chrbuf .= " ";
 	    }
 	    $chreaten = $n - 1;
@@ -538,70 +588,64 @@ sub uline_decorate {
 	    #print "decorate: $dec for spc $n, strlen $ld -> etn $chreaten fwd $chrforward\n";
 	}
     }
+}
 
-    sub put_fill {
-	return if $textbased;
-	if ($decorate == 1) {
-	    if ($curdecorate != 2) {
-		$chrbuf .= $color_sequence_f;
-		$curdecorate = 2;
-	    }
-	    if ($color_colorful) {
-		$chrbuf .= ($charbased ? "__ " : "_") x $_[0];
-	    } else {
-		$chrbuf .= ($charbased ? "   " : " ") x $_[0];
-	    }
-	} else {
-	    $chrbuf .= ($charbased ? "   " : " ") x $_[0];
-	}
-    }
-
+# high-level: specific function
+{
+    # put a substitute for non-printable ucs character of code c in n octets
     sub put_ucs_nonprintable {
 	my ($c, $n) = @_;
 	if ($charbased) {
 	    put_decorate(sprintf("U+%X", $c), undef, $n);
 	} else {
-	    put_decorate("." x $n);
+	    put_decorate("." x $n, undef, $n);
 	}
     }
 
+    sub put_unencoded () {
+	put_decorate(".");
+    }
+
+    sub put_unknown_encoding () {
+	put_decorate("x");
+    }
+
+    # put a normal character in string s for n octets, considering character width and encoding-printable
     sub put_normal {
 	my ($s, $n) = @_;
-	my $o = $s;
-	if ($curdecorate != 0) {
-	    $chrbuf .= $color_sequence_n;
-	    $curdecorate = 0;
-	}
-	return if $s eq '';
+	die if $s eq '';
 	die if $n == 0;
-	# $chrforward = length($sj) - 1;
+
+	decorate_0();
+
 	my $width = wcwidth($s);
-	if ($width == 2) {
-	    $chrforward = 1;
-	} elsif ($width == 0) {
-	    $chrforward = 0;
-	    $o = " $o";
-	} else {
-	    $chrforward = 0;
-	}
 	if (ord($s) >= 0x20 && !is_printable_to_terminal($s)) {
+	    # is_printable_to_terminal depends on wcwidth, so this calling order
 	    put_ucs_nonprintable(ord($s), $n);
 	    return;
 	}
+
+	my $o = $s;
 	if ($s =~ /\p{Bidi_class: R}/ && !$textbased) {
 	    $o = "\x{202d}$o\x{2069}"; # force LTR direction in char dump.
 	}
+	if ($width == 0) {
+	    $o = " $o";
+	    $width = 1;
+	}
+
 	$chreaten = $n - 1;
 	if ($charbased) {
-	    $chrbuf .= $o . (" " x (2 - $chrforward));
+	    $chrbuf .= $o . (" " x (3 - $width));
 	    $chrforward = 0;
 	} else {
 	    $chrbuf .= $o;
+	    $chrforward = $width - 1;
+	    $chrforward = $chreaten if $chrforward > $chreaten;
+	    # output wider than available:
+	    # happens when ISO-8859-1 (or similar) is dumped to
+	    # CJK-width terminals.
 	}
-	$chrforward = $chreaten if $chrforward > $chreaten;
-	# output wider than available:
-	# happens when ISO-8859-1 (or similar) is dumped to
-	# CJK-width terminals.
     }
 }
 
@@ -733,7 +777,7 @@ sub process_char {
 	if ($chrforward) {
 	    $chrforward--;
 	} else {
-	    put_fill (1);
+	    low_put_fill ();
 	}
 	return;
     }
@@ -782,14 +826,14 @@ sub process_C0_ASCII {
 	    put_normal(chr($code), 1);
 	} elsif ($code < 0x20) {
 	    if ($use_control_pictures) {
-		put_decorate(chr(0x2400 + $code), chr(0x2400 + $code));
+		put_decorate(chr(0x2400 + $code), chr(0x2400 + $code), 1);
 	    } else {
-		put_decorate(chr(0x40 + $code), ".");
+		put_decorate(chr(0x40 + $code), ".", 1);
 	    }
 	} elsif ($code == 0x7f) {
-	    put_decorate("?", ".");
+	    put_decorate("?", ".", 1);
 	} else {
-	    put_decorate(".", ".");
+	    put_decorate(".", ".", 1);
 	}
     }
 }
@@ -810,7 +854,7 @@ sub process_GR_none {
     if ($charbased) {
 	put_decorate(sprintf("%02x", $code), undef, 1);
     } else {
-	put_decorate(".", ".");
+	put_decorate(".", ".", 1);
     }
 }
 
@@ -924,15 +968,16 @@ sub is_printable_to_terminal {
     return ((check_char_attr($_[0]) & 0x50) == 0x50);
 }
 
-my $fw_fill_char;
+{
+    my $fw_fill_char;
 
-sub put_invalid_fullwidth {
-    my ($n) = @_;
-    if (!$fw_fill_char) {
-	$fw_fill_char = is_printable_to_terminal("\x{3013}") ? "\x{3013}" : "..";
+    sub put_invalid_fullwidth {
+	my ($n) = @_;
+	if (!$fw_fill_char) {
+	    $fw_fill_char = is_printable_to_terminal("\x{3013}") ? "\x{3013}" : "..";
+	}
+	put_decorate($fw_fill_char, "..", $n);
     }
-#    put_decorate($fw_fill_char . (" " x ($n - 2)), "." x $n, $n);
-    put_decorate($fw_fill_char, "..", $n);
 }
 
 sub put_maybe_fullwidth {
@@ -1068,14 +1113,7 @@ sub process_GR_UTF8 {
 	    last SKIP_HICODE if ($c >= 0x110000);               # over the range
 
 	    my $s = pack("U", $c);
-	    if (is_printable_to_terminal($s)) {
-#		dsay "char %x is printable\n", $c;
-		my $outs = $s;
-		put_normal($s, $n);
-	    } else {
-#		dsay "char %x is NOT printable\n", $c;
-		put_ucs_nonprintable($c, $n);
-	    }
+	    put_normal($s, $n);
 	    return;
 	}
     }
@@ -1084,12 +1122,12 @@ sub process_GR_UTF8 {
 
 {
     my $little_endian = 0;
-    my $width = 2;
+    my $utf_width = 2;
 
     sub process_UTF_1632 {
 	my ($ofs, $code) = (@_);
-	my $w = $width;
-	for (my $i = 1; $i < $width; $i++) {
+	my $w = $utf_width;
+	for (my $i = 1; $i < $utf_width; $i++) {
 	    my $next = get($ofs + $i);
 	    if (! defined $next) {
 		put_invalid_fullwidth($i);
@@ -1103,13 +1141,13 @@ sub process_GR_UTF8 {
 	}
 	#dsay("ofs=%#x, code=%#x", $ofs, $code);
 	if ($code >= 0x110000 || ($code >= 0xdc00 && $code <= 0xdfff)) { # out of the range
-	    put_invalid_fullwidth($width);
+	    put_invalid_fullwidth($utf_width);
 	    return;
 	}
 	if ($code >= 0xd800 && $code <= 0xdbff) {
 	    # high surrogate
-	    if ($width == 4) {
-		put_invalid_fullwidth($width);
+	    if ($utf_width == 4) {
+		put_invalid_fullwidth($utf_width);
 		return;
 	    }
 	    my $next1 = get($ofs + 2);
@@ -1132,26 +1170,21 @@ sub process_GR_UTF8 {
 	}
 	if ($code == 0xfeff && $ofs == 0) {
 	    # BOM at the beginning
-	    put_fill(1);
-	    $chreaten = $w - 1;
+	    put_fill($w);
 	    return;
 	}
 	if ($code <= 32 || $code == 0x7f) {
 	    process_C0_ASCII($ofs, $code);
-	    $chreaten = $width - 1; $chrforward = 0;
+	    $chreaten = $utf_width - 1; $chrforward = 0;
 	    return;
 	}
 	my $s = pack("U", $code);
-	if (is_printable_to_terminal($s)) {
-	    put_normal($s, $w);
-	} else {
-	    put_ucs_nonprintable($code, $w);
-	}
+	put_normal($s, $w);
 	return;
     }
 
     sub process_init_UTF_1632 {
-	($width, $little_endian) = @_;
+	($utf_width, $little_endian) = @_;
     }
 }
 
@@ -1161,7 +1194,8 @@ sub process_GR_UTF8 {
 {
     my %encode_cache;
     my $broken_euc_tw;
-    my %I646table;
+    my %I646def;
+    my %SBCStable;
 
     my @GLR_init;
     my @G_init;
@@ -1231,27 +1265,66 @@ sub process_GR_UTF8 {
     }
 
     BEGIN {
-	%encode_cache = ( '$A' => 'GB2312',
-			  '$B' => 'EUC-JP',     # not used: directly implemented
-			  '$C' => 'EUC-KR',
-			  '$G' => ['EUC-TW', \&load_euc_tw, 'CNS 11643'],
+	%encode_cache = (
+			  # Multibyte
+			  # 4/0 JP 1976 42
+			  '$A' => 'GB2312', # 4/1 CN
+			  '$B' => 'EUC-JP', # 4/2 JP 1990; not used: directly implemented
+			  '$C' => 'EUC-KR', # 4/3
+			  # $D 4/4 JP Supl, directly implemented
+			  # $E 4/5 CCITT CN
+			  # $F 4/6 Blissymbol
+			  '$G' => ['EUC-TW', \&load_euc_tw, 'CNS 11643'], # 4/7-4/13 $G .. $M
 			                        # only Big5 is included in pure Perl distribution
-			  '$O' => ['euc-jisx0213', 'JIS2K', 'JIS X 0213'],
+			  # $N 4/14 DPRK
+			  '$O' => ['euc-jisx0213', 'JIS2K', 'JIS X 0213'], # 4/15-5/0 $O .. $P
+			  # $Q 5/1: upd of JIS2K
+
+			  # 96 chars
+			  # ,@ 4/0 ECMA-113 Cyrillic
 			  ',A' => 'ISO-8859-1', # not used: directly implemented
 			  ',B' => 'ISO-8859-2',
 			  ',C' => 'ISO-8859-3',
 			  ',D' => 'ISO-8859-4',
-			  ',F' => 'ISO-8859-7',
-			  ',G' => 'ISO-8859-6',
-			  ',H' => 'ISO-8859-8',
-			  ',L' => 'ISO-8859-5',
-			  ',M' => 'ISO-8859-9',
-			  ',T' => 'ISO-8859-11',
-			  ',V' => 'ISO-8859-10',
-			  ',Y' => 'ISO-8859-13',
-			  ',_' => 'ISO-8859-14',
-			  ',b' => 'ISO-8859-15',
-			  ',f' => 'ISO-8859-16',
+			  # E 4/5 Supl Grap CSA 123
+			  ',F' => 'ISO-8859-7', # 4/6 Latin/Greek 126
+			  ',G' => 'ISO-8859-6', # 4/7 Latin/Arabic 127
+			  ',H' => 'ISO-8859-8', # 4/8 Latin-Hebrew 138
+			  # I 4/9 CZ 139
+			  # J 4/10 Supl Grap 142
+			  # K 4/11 Technical 143
+			  ',L' => 'ISO-8859-5', # 4/12 Latin-Cyr 144
+			  ',M' => 'ISO-8859-9', # 4/13 Latin5 148
+			  # N 4/14 Residual 6937-2:1983 152
+			  # O 4/15 Basic Cryillic 153
+			  # P 5/0 Suppl for L1/2/5 154
+			  # Q 5/1 Box drawings 155
+			  # R 5/2 Supl 6937:1992 156
+			  # S 5/3 CCITT Hebrew Suppl 164
+			  ',T' => 'ISO-8859-11', # 5/4 Thai 166
+			  # U 5/5 Arabic/FR/DE 167
+			  ',V' => 'ISO-8859-10', # 5/6 Latin 6
+			  # W 5/7 (reserved)
+			  # X 5/8 Sami Suppl 158
+			  ',Y' => 'ISO-8859-13', # 5/9 Latin 7 Baltic Rim
+			  # Z 5/10 Vietnamese 180
+			  # 5/11 Tech Char Set #1 181
+			  # 5/12 Welsh var. L1 182
+			  # 5/13 Sami 197
+			  # 5/14 Latin/Hebrew 198
+			  ',_' => 'ISO-8859-14', # 5/15 Latin 8
+			  # 6/0 Uranic 200
+			  # 6/1 Volgaic 201
+			  ',b' => 'ISO-8859-15', # 6/2 Latin 9 203
+			  # 6/3 L1 with EURO 204
+			  # 6/4 L4 with EURO 205
+			  # 6/5 L7 with EURO 206
+			  ',f' => 'ISO-8859-16', # 6/6 Latin 10/Romanian 226
+			  # 6/7 Ogham 208
+			  # 6/8 Sami Supl #2 209
+			  # 6/9 Latin/Greek 227
+			  # 6/10 Latin/Hebrew 234
+			  # 7/13 Supl Mos for DS3 129
 			);
 	# Note: Technically, $B corresponds to jisx0208-raw, $C to KSC5601-raw, etc.
 	# We need to use FULLWIDTH variants for ASCII-conflicting characters, and
@@ -1260,30 +1333,79 @@ sub process_GR_UTF8 {
 	# However, to make it doubly-sure for any future implementation changes,
 	# we use EUC-encoded tables here.
 
-	%I646table = 
-          ('@' => "\#\N{U+a4}\@\[\\\]\^_\`\{\|\}\~", # 4/0  IRV old
-           'A' => "\N{U+a3}\$\@\[\\\]\^_\`\{\|\}\~", # 4/1  UK
-           'B' => "\#\$\@\[\\\]\^_\`\{\|\}\~", # 4/2  US-ASCII
-           'G' => "\#\N{U+a4}\@\N{U+c4}\N{U+d6}\N{U+c5}\^_\`\N{U+e4}\N{U+f6}\N{U+e5}\~", # 4/7  SE-B
-           'H' => "\#\N{U+a4}\N{U+c9}\N{U+c4}\N{U+d6}\N{U+c5}\N{U+dc}_\N{U+e9}\N{U+e4}\N{U+f6}\N{U+e5}\N{U+fc}", # 4/8  SE-C
-           'J' => "\#\$\@\[\N{U+a5}\]\^_\`\{\|\}\~", # 4/10 JP
-           'K' => "\#\$\N{U+a7}\N{U+c4}\N{U+d6}\N{U+dc}\^_\`\N{U+c4}\N{U+d6}\N{U+dc}\N{U+df}", # 4/11 DE
-           'L' => "\#\N{U+a4}\N{U+a7}\N{U+c3}\N{U+c7}\N{U+d5}\^_\`\N{U+e3}\N{U+e7}\N{U+f5}\N{U+b0}", # 4/12 PT-o
-           'R' => "\#\N{U+a3}\N{U+e0}\N{U+b0}\N{U+e7}\N{U+a7}\^_\N{U+b5}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+a8}", # 5/2  FR old
-           'T' => "\#\N{U+a5}\@\[\\\]\^_\`\{\|\}\~", # 5/4  CN
-           'Y' => "\#\N{U+a3}\N{U+a7}\N{U+b0}\N{U+e7}\N{U+e9}\^_\N{U+f9}\N{U+e0}\N{U+f2}\N{U+e8}\N{U+ec}", # 5/9  IT
-           '`' => "\#\$\@\N{U+c6}\N{U+d8}\N{U+c5}\^_\`\N{U+c6}\N{U+d8}\N{U+c5}\~", # 6/0  NO
-           'a' => "\#\N{U+a7}\@\N{U+c6}\N{U+d8}\N{U+c5}\^_\`\N{U+c6}\N{U+d8}\N{U+c5}\|", # 6/1  NO-2 old
-           'f' => "\#\N{U+a3}\N{U+e0}\N{U+b0}\N{U+e7}\N{U+a7}\^_\N{U+b5}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+a8}", # 6/6  FR
-           'g' => "\#\N{U+a4}\N{U+b4}\N{U+c3}\N{U+c7}\N{U+d5}\^_\`\N{U+e3}\N{U+e7}\N{U+f5}\~", # 6/7  PT-i
-           'h' => "\#\$\N{U+b7}\N{U+a1}\N{U+d1}\N{U+c7}\N{U+bf}_\`\N{U+b4}\N{U+f1}\N{U+e7}\N{U+a8}", # 6/8  ES
-           'i' => "\#\N{U+a4}\N{U+c1}\N{U+c9}\N{U+d6}\N{U+dc}\^_\N{U+e1}\N{U+e9}\N{U+f6}\N{U+fc}\N{U+2dd}", # 6/9  HU
-           'w' => "\#\$\N{U+e0}\N{U+e2}\N{U+e7}\N{U+ea}\N{U+ee}_\N{U+f4}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+fb}", # 7/7  CA1
-           'x' => "\#\$\N{U+e0}\N{U+e2}\N{U+e7}\N{U+ea}\N{U+c9}_\N{U+f4}\N{U+e9}\N{U+f9}\N{U+e8}\N{U+fb}", # 7/8  CA2
-           'z' => "\#\$\N{U+17d}\N{U+160}\N{U+110}\N{U+106}\N{U+10c}_\N{U+17e}\N{U+161}\N{U+111}\N{U+107}\N{U+10d}", # 7/10 YU
-           '!A'=> "\#\N{U+a4}\@\N{U+a1}\N{U+d1}\]\N{U+bf}_\`\N{U+b4}\N{U+f1}\[\N{U+a8}", # 2/1 4/1  CU
-           '!C'=> "\N{U+a3}\N{U+a4}\N{U+d3}\N{U+c9}\N{U+cd}\N{U+da}\N{U+c1}_\N{U+f3}\N{U+e9}\N{U+ed}\N{U+fa}\N{U+e1}", # 2/1 4/3  IE
+	%I646def = 
+	  ('@' => 'ascii 24=a4 7e=af', # 4/0  IRV old 2
+	   'A' => 'ascii 23=a3 7e=af', # 4/1  UK 4
+	   'B' => 'ascii', # 4/2  US-ASCII 6 -> directly implemented
+	   # 4/3 NATS Primary FI SE 8-1
+	   # 4/4 NATS Secondary FI SE 8-2
+	   # 4/5 NATS Primary DK NO 9-1
+	   # 4/6 NATS Secondary DK NO 9-2
+	   'G' => 'i646 # a4 @ c4 d6 c5 ^ ` e4 f6 e5 af', # 4/7  SE-B 10
+	   'H' => 'i646 # a4 c9 c4 d6 c5 dc e9 e4 f6 e5 fc', # 4/8  SE-C 11
+	   # 'I' 4-9 Japanese KATAKANA 13 -> directly implemented
+	   'J' => 'ascii 5c=a5 7e=af', # 4/10 JP 14
+	   'K' => 'i646 # $ a7 c4 d6 dc ^ ` e4 f6 fc df', # 4/11 DE 21
+	   'L' => 'i646 # a4 a7 c3 c7 d5 ^ ` e3 e7 f5 b0', # 4/12 PT-o 16
+	   # 4/13 DIN African 39
+	   # 4/14 Cyrillic 5427 37
+	   # 4/15 Bibliography DIN 31624 38
+	   # 5/0 Bibliography 5426-1980 53
+	   # 5/1 Ext-37 54
+	   'R' => 'i646 # a3 e0 b0 e7 a7 ^ b5 e9 f9 e8 a8', # 5/2  FR old 25
+	   # 5/3 Greek Biblio 5428-1980 55
+	   'T' => 'ascii 24=a5 7e=af', # 5/4  CN 57
+	   # 5/5 Latin-Greek GR-honeywell 27
+	   # 5/6 UK teletext 47
+	   # 5/7 INIS subset IRV 49
+	   # 5/8 Greek Biblio 5428 31
+	   'Y' => 'i646 # a3 a7 b0 e7 e9 ^ f9 e0 f2 e8 ec', # 5/9  IT 15
+	   # 5/10 ES-o 17
+	   # 5/11 Greek o 18
+	   # 5/12 Latin-greek o 19
+	   # 5/13 INIS ex-49 50
+	   # 5/14 INIS Cyr ex-49 51
+	   # 5/15 Arabic Morocco 59
+	   '`' => 'i646 # $ @ c6 d8 c5 ^ ` e6 f8 e5 af', # 6/0  NO
+	   'a' => 'i646 # a7 @ c6 d8 c5 ^ ` e6 f8 e5 |', # 6/1  NO-2 old
+	   # 6/2 CCITT supl videotex 70
+	   # 6/3 CCITT videotex2 mosaic 71
+	   # 6/4 CCITT videotex3 mosaic old 72/173
+	   # 6/5 APL 68
+	   'f' => 'i646 # a3 e0 b0 e7 a7 ^ b5 e9 f9 e8 a8', # 6/6  FR
+	   'g' => 'i646 # a4 b4 c3 c7 d5 ^ ` e3 e7 f5 af', # 6/7  PT-i
+	   'h' => 'i646 # $ b7 a1 d1 c7 bf ` b4 f1 e7 a8', # 6/8  ES
+	   'i' => 'i646 # a4 c1 c9 d6 dc ^ e1 e9 f6 fc 2dd', # 6/9  HU
+	   # 6/10 Greek ELOT withdrawn 88
+	   # 6/11 Arabic ASMO-449 ISO9036 89
+	   # 6/12 Supl.Set for reg no2 90
+	   'm' => '_ 22 a3 24-3b=24 3c=2440 = 2441 ? _ 41-5a=41 _ a5 2442', # 6/13 JP OCR-A 91
+	   'n' => 'ascii 5c=a5 60=_ 7e=_', # 6/14 JP OCR-B 92
+	   'o' => '_ _ a3 a4 5c _ a7', # 6/15 JP OCR-B Add. 93
+	   'p' => 'ascii 5c=a5 60-7e=_ 7c=|', # 7/0 JP OCR hand 94
+	   'q' => '25=5c', # 7/1 JP OCR hand add 95
+	   'r' => '_ ff62 ff63 _ _ ff66 30-5f=ff70', # 7/2 JP OCR katakana 96
+	   # 7/3 E13B 98
+	   # 7/4 Suppl. videotex/teletext ANSI 99
+	   # 7/5 CCITT teletext graphics1 102
+	   # 7/6 CCITT teletext graphics2 103
+	   'w' => 'i646 # $ e0 e2 e7 ea ee f4 e9 f9 e8 fb', # 7/7  CA1
+	   'x' => 'i646 # $ e0 e2 e7 ea c9 f4 e9 f9 e8 fb', # 7/8  CA2
+	   # 7/9 Mosaic-1 CCITT 137
+	   'z' => 'i646 # $ 17d 160 110 106 10c 17e 161 111 107 10d', # 7/10 YU
+	   # 7/11 YU Cyrillic 146
+	   # 7/12 Supl Grapix CCITT Data Syntax 3 128
+	   # 7/13 Macedonia Cyr 147
+	   # 7/14 empty
+	   # 2/1 4/0 Greek Primary CCITT 150
+	   '!A'=> 'i646 # a4 @ a1 d1 ] bf ` b4 f1 [ a8', # 2/1 4/1  CU
+	   # 2/1 4/2 IRV 646 170
+	   '!C'=> 'i646 a3 a4 d3 c9 cd da c1 f3 e9 ed fa e1', # 2/1 4/3  IE
+	   # 2/1 4/4 Turkmen 230
+	   # 2/1 4/5 ANSEL Biblio 231
+	   # 2/1 4/6 Turkmen for 8bit 232
 	  );
+	%SBCStable = ();
     }
 
     sub get_encode_cache {
@@ -1337,6 +1459,68 @@ sub process_GR_UTF8 {
 	}
     }
 
+    sub _decode_sbcssrc ($) {
+	my @t = split(" ", $_[0]);
+	my @o = ();
+	my $p = 33;
+	my $pto;
+	$o[127] = undef;
+	my @pos = ();
+
+	if ($t[0] eq 'ascii') {
+	    shift @t;
+	    @o[32 .. 126] = map { chr } (32 .. 126);
+	} elsif ($t[0] eq 'i646') {
+	    shift @t;
+	    @o[32 .. 126] = map { chr } (32 .. 126);
+	    @pos = (0x23, 0x24,
+		    0x40, 0x5b, 0x5c, 0x5d, 0x5e,
+		    0x60, 0x7b, 0x7c, 0x7d, 0x7e);
+	    die "internal error: not 12 items in i646" if (@t != 12);
+	}
+	for (@t) {
+	    $_ =~ /^(?:([2-7][0-9a-f])(?:-([2-7][0-9a-f]))?=)?(?:([0-9a-f]+)|(.))$/si or
+	      die "internal error: bad spec \"$_\" in sbcssrc";
+	    if (defined $1) { $p = hex($1); $pto = defined $2 ? hex($2) : $p; }
+	    elsif (@pos) { $p = $pto = shift @pos; }
+	    else { $pto = $p };
+
+	    my $c;
+	    if (defined $3) { $c = hex($3) }
+	    elsif ($4 eq '_') { $c = undef }
+	    else { $c = ord($4) }
+	    do { $o[$p++] = defined $c ? chr($c++) : undef; } while ($p <= $pto);
+	}
+	return \@o;
+    }
+
+    sub setup_sbcstable ($) {
+	my ($set) = @_;
+	return $SBCStable{$set} if exists $SBCStable{$set};
+	my @tbl = ();
+
+	my $key = $I646def{B}; # US ASCII
+	my $table = $I646def{$set};
+	my $tbl = undef;
+
+	if (defined $table) {
+		$tbl = _decode_sbcssrc($table);
+	}
+	if (defined $encode_cache{$set}) {
+	    my $enc = get_encode_cache($set);
+	    if ($enc) {
+		for my $c (32 .. 127) {
+		    my $s = $enc->decode(chr(0x80 + $c));
+		    $tbl[$c] = $s unless $s eq "\N{U+fffd}";
+		}
+		$tbl = \@tbl;
+	    }
+	}
+	debug&2 and dsay "Loaded I646 encoding %s => %d\n", $set, defined $tbl;
+	$SBCStable{$set} = $tbl;
+	return $tbl;
+    }
+
     sub process_GLR_2022 {
 	my ($ofs, $code) = (@_);
 
@@ -1383,10 +1567,10 @@ sub process_GR_UTF8 {
 		if ($c == 0x20 && $is_GR == 0) {
 		    process_GL_ASCII($ofs, 0x20);
 		} elsif ($c >= 0x21 && $c <= 0x5f) {
-		    my $s = $enc_SJ->decode(chr(0x80 | $c));
+		    my $s = chr(0xff40 + $c);
 		    put_normal($s, 1);
 		} else {
-		    put_decorate(".");
+		    put_unencoded();
 		}
 	    }
 	    when (['$B', '$@']) {
@@ -1398,7 +1582,7 @@ sub process_GR_UTF8 {
 			put_decode_maybe_fullwidth($enc_EJ, chr(0x80 | $c) . chr(0x80 | $next), 2);
 		    }
 		} else {
-		    put_decorate(".");
+		    put_unencoded();
 		}
 	    }
 	    when ('$D') {
@@ -1407,37 +1591,22 @@ sub process_GR_UTF8 {
 		    put_decode_maybe_fullwidth($enc_EJ, chr(0x8f) . chr(0x80 | $c) . chr(0x80 | $next), 2);
 		    return;
 		} else {
-		    put_decorate(".");
+		    put_unencoded();
 		}
 	    }
-	    when (/^[\x21-\x23]?[\x40-\x7e]$/) {
-		# ISO-646 or other 94-char set
-		my $table = $I646table{$_};
+	    when (/^,?[\x21-\x23]?[\x40-\x7e]$/) {
+		exists $SBCStable{$_} or setup_sbcstable($_);
+		my $table = $SBCStable{$_};
 		if (defined $table) {
-		    my $key = $I646table{B}; # US ASCII
-		    my $i = index($key, chr($c));
-		    if ($i != -1) {
-			put_normal(substr($table, $i, 1), 1);
+		    my $cc = $table->[$c];
+		    if (defined $cc) {
+			put_normal($table->[$c], 1);
 		    } else {
-			process_GL_ASCII($ofs, $c);
+			put_unencoded();
 		    }
 		} else {
 		    # TODO: other 94char codes
-		    put_decorate("x");
-		}
-	    }
-	    when (/^,[\x42-\x7e]$/) {
-		# ISO-8859-? GR or other 96-char set
-		my $enc = get_encode_cache($G);
-		if ($enc) {
-		    my $s = $enc->decode(chr(0x80 | $code));
-		    if (length $s == 1 && $s ne "\x{fffd}") {
-			put_normal($s, 1);
-		    } else {
-			put_decorate(".");
-		    }
-		} else {
-		    put_decorate("x");
+		    put_unknown_encoding();
 		}
 	    }
 	    when (/^\$[ACO]$/ or ($_ eq '$G' and !$broken_euc_tw)) {
@@ -1452,7 +1621,7 @@ sub process_GR_UTF8 {
 		    }
 		    $chreaten = $chrforward = 1;
 		} else {
-		    put_decorate(".");
+		    put_unencoded();
 		}
 	    }
 	    when (/^\$[G-M]$/) {
@@ -1469,7 +1638,7 @@ sub process_GR_UTF8 {
 		    }
 		    $chreaten = $chrforward = 1;
 		} else {
-		    put_decorate(".");
+		    put_unencoded();
 		}
 	    }
 	    when ('$P') {
@@ -1489,11 +1658,11 @@ sub process_GR_UTF8 {
 			put_invalid_fullwidth(2);
 		    }
 		} else {
-		    put_decorate(".");
+		    put_unencoded();
 		}
 	    }
 	    default {
-		put_decorate("x"); # "x"
+		put_unknown_encoding();
 	    }
 	}
 
@@ -1536,24 +1705,21 @@ sub process_GR_UTF8 {
 			# LS2, LS3
 			break if !$allow_LS;
 			$GLR[0] = $targetC & 3;
-			put_fill(1);
-			$chreaten = 1; $chrforward = 0;
+			put_fill(2);
 			return;
 		    }
 		    when ([0x7e, 0x7d, 0x7c]) {
 			# LS[123]R
 			break if !$allow_LS;
 			$GLR[1] = 0x7f - $targetC;
-			put_fill(1);
-			$chreaten = 1; $chrforward = 0;
+			put_fill(2);
 			return;
 		    }
 		    when ([0x4e, 0x4f]) {
 			# SS2, SS3
 			break if !$allow_SS;
 			$SS = $targetC & 3;
-			put_fill(1);
-			$chreaten = 1; $chrforward = 0;
+			put_fill(2);
 			return;
 		    }
 		    when ([0x20]) {
@@ -1561,8 +1727,7 @@ sub process_GR_UTF8 {
 			break if !$allow_designate;
 			my $codeA = get($ofs + 2);
 			if ($codeA >= 0x41 && $codeA <= 0x5C) {
-			    put_fill(1);
-			    $chreaten = 2; $chrforward = 0;
+			    put_fill(3);
 			    return;
 			}
 			break;
@@ -1573,16 +1738,14 @@ sub process_GR_UTF8 {
 			my $codeA = get($ofs + 2);
 			if ($codeA == 0x47) {
 			    #dsay "ISO-2022 SEQUENCE at %x: go to UTF\n", $ofs;
-			    put_fill(1);
-			    $chreaten = 2; $chrforward = 0;
+			    put_fill(3);
 			    # switch to UTF (with special return)
 			    ($process_GL, $process_GR, $process_C0) = 
 			      (\&process_GL_ASCII, \&process_GR_UTF8, \&process_C0_UTF8_in_2022);
 			    return;
 			} elsif ($codeA == 0x40) {
 			    # ISO-2022 calling: no-op
-			    put_fill(1);
-			    $chreaten = 2; $chrforward = 0;
+			    put_fill(3);
 			    return;
 			}
 			break;
@@ -1628,9 +1791,7 @@ sub process_GR_UTF8 {
 		    if ($n) {
 			#dsay "ISO-2022 SEQUENCE %d: ofs %x, target G%d, assign %s\n", $n, $ofs, $target, $assign;
 			$G[$target] = $assign;
-			put_fill(1);
-			$chreaten = $n - 1;
-			$chrforward = 0;
+			put_fill($n);
 			return;
 		    }
 		}
@@ -1649,8 +1810,7 @@ sub process_GR_UTF8 {
 		my $t = get($ofs + 2);
 		if ($t == 0x40) {
 		    # return to ISO-2022
-		    put_fill(1);
-		    $chreaten = 2; $chrforward = 0;
+		    put_fill(3);
 		    # switch to UTF (with special return)
 		    ($process_GL, $process_GR, $process_C0) = 
 		      (\&process_GLR_2022, \&process_GLR_2022, \&process_C0_2022);
@@ -1659,8 +1819,7 @@ sub process_GR_UTF8 {
 		    return;
 		} elsif ($t == 0x47) {
 		    # UTF-8 calling: no-op
-		    put_fill(1);
-		    $chreaten = 2; $chrforward = 0;
+		    put_fill(3);
 		    return;
 		}
 	    }
