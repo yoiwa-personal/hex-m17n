@@ -29,7 +29,7 @@ BEGIN {
 	*debug = sub () { $dlevel };
 	*dsay = sub ($@) {
 	    print STDERR "DEBUG: " .
-	      (sprintf(shift @_, @_) =~ s/\n(?>.)/\n     | $1/gr
+	      (sprintf(shift @_, @_) =~ s/\n(?=.)/\n     | /gr
 	       =~ s/(?<!\n)\z/" (" . join(":",(caller())[1,2]) . ")\n"/esr )
 	};
 	eval 'use Data::Dumper;
