@@ -1652,7 +1652,7 @@ sub process_GR_UTF8 {
 		}
 	    }
 	    when ('$P') {
-		# EUC-JP2013, 2nd plane
+		# JIS X 0213 (EUC-JP2004), 2nd plane
 		my $next = get($ofs + 1) & 0x7f;
 		if ($next >= 0x21 && $next <= 0x7e) {
 		    my $enc = get_encode_cache('$O');
@@ -1663,6 +1663,34 @@ sub process_GR_UTF8 {
 			 || $c >= 0x2d && $c <= 0x2f
 			 || $c >= 0x6e)) {
 			put_decode_maybe_fullwidth($enc, chr(0x8f) . chr(0x80 | $c) . chr(0x80 | $next), 2);
+			return;
+		    } else {
+			put_invalid_fullwidth(2);
+		    }
+		} else {
+		    put_unencoded();
+		}
+	    }
+	    when ('$Q') {
+		# JIS X 0213:2004, 1st plane, revised
+		my $next = get($ofs + 1) & 0x7f;
+		if ($next >= 0x21 && $next <= 0x7e) {
+		    my $enc = get_encode_cache('$O');
+		    if ($enc) {
+			# added 10 characters
+			if ($c == 0x2e && $next == 0x21) { put_normal(chr(0x4ff1), 2) }
+			elsif ($c == 0x2f && $next == 0x7e) { put_normal(chr(0x525d), 2) }
+			elsif ($c == 0x4f && $next == 0x54) { put_normal(chr(0x20b9f), 2) }
+			elsif ($c == 0x4f && $next == 0x7e) { put_normal(chr(0x541e), 2) }
+			elsif ($c == 0x74 && $next == 0x27) { put_normal(chr(0x5653), 2) }
+			elsif ($c == 0x7e && $next == 0x7a) { put_normal(chr(0x59f8), 2) }
+			elsif ($c == 0x7e && $next == 0x7b) { put_normal(chr(0x5c5b), 2) }
+			elsif ($c == 0x7e && $next == 0x7c) { put_normal(chr(0x5e77), 2) }
+			elsif ($c == 0x7e && $next == 0x7d) { put_normal(chr(0x7626), 2) }
+			elsif ($c == 0x7e && $next == 0x7e) { put_normal(chr(0x7e6b), 2) }
+			else {
+			    put_decode_maybe_fullwidth($enc, chr(0x80 | $c) . chr(0x80 | $next), 2);
+			}
 			return;
 		    } else {
 			put_invalid_fullwidth(2);
