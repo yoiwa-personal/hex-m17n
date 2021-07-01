@@ -1333,6 +1333,8 @@ sub process_GR_UTF8 {
 	# However, to make it doubly-sure for any future implementation changes,
 	# we use EUC-encoded tables here.
 
+	# sources: https://www.itscj.ipsj.or.jp/itscj_english/iso-ir/ISO-IR.pdf
+	# and some Wikipedia articles for specific Unicode codepoints
 	%I646def = 
 	  ('@' => 'ascii 24=a4 7e=af', # 4/0  IRV old 2
 	   'A' => 'ascii 23=a3 7e=af', # 4/1  UK 4
@@ -1354,7 +1356,12 @@ sub process_GR_UTF8 {
                    42e 410 411 426 414 415 424 413 425 418 419 41a 41b 41c 41d 41e
                    41f 42f 420 421 422 423 416 412 42c 42b 417 428 42d 429 427 ', # 4/14 Cyrillic 5427 37
 	   # O 4/15 Bibliography DIN 31624 38
-	   # P 5/0 Bibliography 5426-1980 53
+	   'P' => '   60 B4 A8 7E 1fbf 1ffe 037a _ _ _ _ _ _ _ _
+                   ab bb 201d 201c 374 375 _ _ _ _ _ b7 _ _ _ 3b
+                   _ 391 392 _ 393 394 395 3da 3dc 396 397 398 399 39a 39b 39c 
+                   39d 39e 39f 3a0 3d8 3a1 3a3 _ 3a4 3a5 3a6 3a7 3a8 3a9 3e0 _
+                   _ 3b1 3b2 3d0 3b3 3b4 3b5 3db 3dd 3b6 3b7 3b8 3b9 3ba 3bb 3bc
+                   3bd 3bf 3be 3c0 3d9 3c1 3c3 3c2 3c4 3c5 3c6 3c7 3c8 3c9 3e1', # 5/0 Bibliography 5426-1980 53
 	   # Q 5/1 Ext-37 54
 	   'R' => 'i646 # a3 e0 b0 e7 a7 ^ b5 e9 f9 e8 a8', # 5/2  FR old 25
 	   # S 5/3 Greek Biblio 5428-1980 55
@@ -1374,12 +1381,20 @@ sub process_GR_UTF8 {
 	   # _ 5/15 Arabic Morocco 59
 	   '`' => 'i646 # $ @ c6 d8 c5 ^ ` e6 f8 e5 af', # 6/0  NO
 	   'a' => 'i646 # a7 @ c6 d8 c5 ^ ` e6 f8 e5 |', # 6/1  NO-2 old
-	   # b 6/2 CCITT supl videotex 70
-	   # c 6/3 CCITT videotex2 mosaic 71
+	   'b' => '   a1 a2 a3  $ a5  # a7 a4 2018 201c ab 2190 2191 2192 2193
+                   b0 b1 b2 b3 d7 b5 b6 b7 f7 2019 201d bb   bc   bd   be   bf
+                   344 300 301 302 303 304 306 307 308 _ 30a 327 _ 30b 328 30c
+                   2015 b9 ae a9 2122 266a _ _ _ _ _ _ 2158 215c 215d 215e
+                   2126 c6 d0 aa 126 _ 132 13f 141 d8 152 ba de 166 14a 149
+                   138 e6 111 f0 127 131 133 140 142 f8 153 df fe 167 14b', # 6/2 CCITT supl videotex 70 [1]
+	   'c' => '21-34=1fb00 258c 36-3f=1fb1f
+                   40-44=1fb3c 25e3 46-4b=1fb41 1fb68 1fb69 1fb71 1fb95
+                   50-54=1fb47 25e2 56-5b=1fb4c 1fb6a 1fb6b 1fb75 2588
+                   60-69=1fb1e 2590 6b-5f=1fb28', # c 6/3 CCITT videotex2 mosaic 71
 	   # d 6/4 CCITT videotex3 mosaic old 72/173
 	   'e' => 'a8 ) < 2264 = > ] 2228 2227 2260 f7 , + . /
                    30 31 32 33 34 35 36 37 38 39 ( [ ; d7 : 5c
-                   203e 237a 22a5 2229 230a 220a 5f 2207 2206 2373 2218 27 2395 | 22a4 25cb
+                   af 237a 22a5 2229 230a 220a 5f 2207 2206 2373 2218 27 2395 | 22a4 25cb
                    * ? 2374 2308 7e 2193 222a 2375 2283 2191 2282 2190 22a2 2192 2265 2212
                    22c4 61-7A=41 { 22a3 } 24', # 6/5 APL 68
 	   'f' => 'i646 # a3 e0 b0 e7 a7 ^ b5 e9 f9 e8 a8', # 6/6  FR
@@ -1415,6 +1430,8 @@ sub process_GR_UTF8 {
 	   # !E 2/1 4/5 ANSEL Biblio 231
 	   # !F 2/1 4/6 Turkmen for 8bit 232
 	  );
+          # note [1]: combining character preceeding the main character, different from Unicode.
+	  #    It's not considered because not important for hex-dumping purpose.
 	%SBCStable = ();
     }
 
