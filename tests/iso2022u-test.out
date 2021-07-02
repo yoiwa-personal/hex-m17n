@@ -1,0 +1,19 @@
+ISO-2022-U (UTF-8 go-and-back) test.
+
+ASCII: ABCDE
+ISO8859-1: ÁÂÃÄÅ
+ISO8859-7: ΑΒΓΔΕ
+ASCII again: ABCDE
+JIS x0208: 、。，
+ASCII again: ABCDE
+Now, let's goto UTF!
+ABCDE
+ÁÂÃ
+ΑΒΓ
+、。，
+ABCDE
+Back to 2022
+ASCII: ABCDE
+ISO8859-1: ÁÂÃÄÅ
+JIS x0208: 、。，
+Done.
