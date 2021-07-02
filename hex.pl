@@ -616,8 +616,6 @@ sub uline_decorate {
 	die if $s eq '';
 	die if $n == 0;
 
-	decorate_0();
-
 	my $width = wcwidth($s);
 	if (ord($s) >= 0x20 && !is_printable_to_terminal($s)) {
 	    # is_printable_to_terminal depends on wcwidth, so this calling order
@@ -633,6 +631,8 @@ sub uline_decorate {
 	    $o = " $o";
 	    $width = 1;
 	}
+
+	decorate_0();
 
 	$chreaten = $n - 1;
 	if ($charbased) {
