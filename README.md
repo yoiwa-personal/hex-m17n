@@ -3,7 +3,7 @@
 hex : multi-locale hexadecimal dump tool
 ========================================
 
-(c) 2016-2018 Yutaka OIWA.
+(c) 2016-2021 Yutaka OIWA.
 
 ## 1. Overview
 
@@ -191,7 +191,7 @@ each of those spaces to show that there is no corresponding
 ([J] is a colored marker, taking single column)
 
 Such space-fillers are also inserted when some input byte sequence
-corresponds to a encoding function, not to a character.  See the
+corresponds to an encoding function, not to a character.  See the
 following example, that is the same text as above within
 ISO-2022-JP encoding.  The space-filler is inserted to the
 location corresponding to the byte sequences "1b 24 42" and "1b 28
@@ -237,7 +237,7 @@ If wide characters are found, fillers are also put in
 the character dump format, as shown in the second example
 (in non-colored output, fillers will be invisible.)
 
-Note: the output has "reversible" or "lossless" property
+Note: outputs have "reversible" or "lossless" property
 only when the input coding system is set to "ascii" (binary).
 
 
@@ -309,16 +309,16 @@ and "less"-friendly output format (using backspaces).
 
 ## Appendix A:  the brief description of "undocumented" options.
 
-Please do not use these options in general cases, as it might be
+Please do not use these options in general usage, as it might be
 changed, extended or removed in future releases.
 
  *  ``--no-reset-status``:
 
-    "Hex" treats ISO-2022 input as slightly deviated from its
+    "Hex" treats ISO-2022 input as slightly deviated from the
     standard.  To avoid never-ending "mojibakes" caused by
-    unintended, unlucky occurrence of some escape sequences, our
+    unintended, unlucky occurrences of some escape sequences, our
     decoder forcibly resets part of ISO-2022 shift status on some
-    control characters which seems to mean end-of-data, such as CR, LF or NUL.
+    control characters which seem to mean end-of-data, such as CR, LF or NUL.
     The ``--no-reset-status`` option inhibits this non-standard behavior.
 
     It may be useful to handle "correct" input of ISO-2022 which uses shift
@@ -338,16 +338,17 @@ changed, extended or removed in future releases.
     these characters and make its output may become less useful than
     before.  in ``-c`` mode, control characters with two-character
     mnemonics are displayed by ASCII characters, not using the
-    combined symbols.  ``--use-control-pictures=2`` uses non-standard
+    combined symbols.  ``--use-control-pictures=2`` uses
     two-character variant (NU and D1 for example) for all ASCII
-    control characters in ``-c`` output.
+    control characters in ``-c`` output,
+    based on an ancient ISO 2047 abbreviations.
 
     (For those who know memory of traditional Japanese PC-9801
-    environment, the two-character mnemonics are taken from there.)
+    environment, the two-character mnemonics have bee seen there.)
 
  *  ``--cjk-region``:
 
-    The auto-detection algorithms for input encoding picks possible
+    Automatic detection algorithms for input encoding picks possible
     candidates depending on the current locale language.  It will be
     taken from the current locale name, name of terminal character
     sets in the locale, and Windows code pages.  This option overrides
@@ -395,12 +396,12 @@ changed, extended or removed in future releases.
      * `-i'iso-2022(:fixed J I)'` is JIS X 0201.
 
     Single quotes around the spec is required by POSIX (Unix-like) shells.
-    Other operating environments may require another style of quotings.
+    Other operating environments may require another style of quoting.
 
  *  ``--debug``:
 
     It's a debug option.  It will not be documented even in this
-    appendix, but one note: To make easy to find correspondence
+    appendix, but one note: To make it easy to find correspondence
     between debug messages and binary inputs (and its corresponding
     output), the debug messages of this "hex" script is intentionally
     directed to standard output (stdout), not to standard error output
@@ -414,7 +415,7 @@ changed, extended or removed in future releases.
    (for example, ``Á`` in Latin-1 and Latin-2, or ``、`` in
    JIS X0208, KSC 5601, GB2312 and CNS11643).
    These are mapped to the same internal coding points based on
-   ISO 10646-1.
+   ISO 10646-1 (Unicode).
 
  * Paddings displayed in the "character" dump section is not
    identical between EUC-JP and japanese-iso8.
