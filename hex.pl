@@ -450,7 +450,7 @@ sub detect_coding {
 	      /\A(?:[\x00-\x7f]
 	       |[\xa1-\xfe][\xa1-\xfe]
 	       |\x8e[\xa2-\xaf][\xa1-\xfe][\xa1-\xfe]
-	       )*.{0-3}\z/sx) {
+	       )*.{0,3}\z/sx) {
 	    'EUC-TW'
 	}
 	when (/\A(?:[\x00-\x7f]
