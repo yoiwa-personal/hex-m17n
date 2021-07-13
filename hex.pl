@@ -289,7 +289,7 @@ sub main () {
 	unless ($charbased || $textbased) {
 	    $binbuf = substr($binbuf . (" "x48), 0, 50) if length $binbuf < 50;
 	}
-	decorate_0() unless $textbased;
+	decorate_normal() unless $textbased;
 	if ($textbased) {
 	    print $chrbuf                                       or last;
 	} else {
@@ -304,7 +304,7 @@ sub main () {
     # cleaning up
 
     $chrbuf = "";
-    decorate_0(); # if $textbased
+    decorate_normal(); # if $textbased
     print "$chrbuf";
 
     close STDOUT or die "Write failed: $!"; # catch any errors
@@ -502,14 +502,14 @@ sub uline_decorate {
 {
     my $curdecorate = 0;
 
-    sub decorate_0 () {
+    sub decorate_normal () {
 	if ($curdecorate != 0) {
 	    $chrbuf .= $color_sequence_n;
 	    $curdecorate = 0;
 	}
     }
 
-    sub decorate_1 () {
+    sub decorate_as_marked () {
 	if ($decorate == 1) {
 	    if ($curdecorate != 1) {
 		$chrbuf .= $color_sequence_d;
@@ -518,7 +518,7 @@ sub uline_decorate {
 	}
     }
 
-    sub decorate_2 () {
+    sub decorate_as_filler () {
 	if ($decorate == 1) {
 	    if ($curdecorate != 2) {
 		$chrbuf .= $color_sequence_f;
@@ -530,7 +530,7 @@ sub uline_decorate {
     sub low_put_fill () {
 	return if $textbased;
 	if ($decorate == 1) {
-	    decorate_2();
+	    decorate_as_filler();
 	    if ($color_colorful) {
 		$chrbuf .= ($charbased ? "__ " : "_");
 	    } else {
@@ -562,7 +562,7 @@ sub uline_decorate {
 	$smpl //= ("." x length $dec);
 	$n //= length($smpl);
 
-	decorate_1();
+	decorate_as_marked();
 	if ($charbased) {
 	    my $ld = length($dec);
 	    $ld++ if $dec =~ /\p{Ea: W}|\p{Ea: F}/;
@@ -571,7 +571,7 @@ sub uline_decorate {
 	    $chrbuf .= uline_decorate($dec);
 	    if ($sp) {
 		$chrbuf .= uline_decorate(" " x ($sp - 1));
-		decorate_0();
+		decorate_normal();
 		$chrbuf .= " ";
 	    }
 	    $chreaten = $n - 1;
@@ -632,7 +632,7 @@ sub uline_decorate {
 	    $width = 1;
 	}
 
-	decorate_0();
+	decorate_normal();
 
 	$chreaten = $n - 1;
 	if ($charbased) {
@@ -797,7 +797,7 @@ BEGIN {
     @C0_abbrs = 
       ('\0^A^B^C^D^E^F\a\b\t\n\v\f\r^N^O^P^Q^R^S^T^U^V^W^X^Y^Z^[^\^]^^^_sp^?',
        '                BSHTLFVTFFCRSOSI                  EM    FSGSRSUSSP  ',
-       'NUSHSXEXETEQAKBLBSHTLFVTFFCRSOSIDLD1D2D3D4NKSYEBCNEMSBECFSGSRSUSSPDT') ; # ISO 2047 / TFC 1345
+       'NUSHSXEXETEQAKBLBSHTLFVTFFCRSOSIDLD1D2D3D4NKSYEBCNEMSBECFSGSRSUSSPDT') ; # ISO 2047 / RFC 1345
 }
 
 sub process_C0_ASCII {
