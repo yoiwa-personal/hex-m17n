@@ -1194,7 +1194,7 @@ sub process_GR_UTF8 {
 {
     my %encode_cache;
     my $broken_euc_tw;
-    my %I646def;
+    my %SBCS_definitions;
     my %SBCStable;
 
     my @GLR_init;
@@ -1335,20 +1335,20 @@ sub process_GR_UTF8 {
 
 	# sources: https://www.itscj.ipsj.or.jp/itscj_english/iso-ir/ISO-IR.pdf
 	# and some Wikipedia articles for specific Unicode codepoints
-	%I646def = 
-	  ('@' => 'ascii 24=a4 7e=af', # 4/0  IRV old 2
-	   'A' => 'ascii 23=a3 7e=af', # 4/1  UK 4
-	   'B' => 'ascii', # 4/2  US-ASCII 6 -> directly implemented
+	%SBCS_definitions = 
+	  ('@' => ':ascii 24=a4 7e=af', # 4/0  IRV old 2
+	   'A' => ':ascii 23=a3 7e=af', # 4/1  UK 4
+	   'B' => ':ascii', # 4/2  US-ASCII 6 -> directly implemented
 	   # C 4/3 NATS Primary FI SE 8-1
 	   # D 4/4 NATS Secondary FI SE 8-2
 	   # E 4/5 NATS Primary DK NO 9-1
 	   # F 4/6 NATS Secondary DK NO 9-2
-	   'G' => 'i646 # a4 @ c4 d6 c5 ^ ` e4 f6 e5 af', # 4/7  SE-B 10
-	   'H' => 'i646 # a4 c9 c4 d6 c5 dc e9 e4 f6 e5 fc', # 4/8  SE-C 11
+	   'G' => ':iso646 # a4 @ c4 d6 c5 ^ ` e4 f6 e5 af', # 4/7  SE-B 10
+	   'H' => ':iso646 # a4 c9 c4 d6 c5 dc e9 e4 f6 e5 fc', # 4/8  SE-C 11
 	   'I' => '21-5f=ff61', # 4-9 Japanese KATAKANA 13 -> directly implemented
-	   'J' => 'ascii 5c=a5 7e=af', # 4/10 JP 14
-	   'K' => 'i646 # $ a7 c4 d6 dc ^ ` e4 f6 fc df', # 4/11 DE 21
-	   'L' => 'i646 # a4 a7 c3 c7 d5 ^ ` e3 e7 f5 b0', # 4/12 PT-o 16
+	   'J' => ':ascii 5c=a5 7e=af', # 4/10 JP 14
+	   'K' => ':iso646 # $ a7 c4 d6 dc ^ ` e4 f6 fc df', # 4/11 DE 21
+	   'L' => ':iso646 # a4 a7 c3 c7 d5 ^ ` e3 e7 f5 b0', # 4/12 PT-o 16
 	   # M 4/13 DIN African 39
 	   'N' => '21-3f=21 
                    44e 430 431 446 434 435 444 433 445 438 439 43a 43b 43c 43d 43e
@@ -1363,14 +1363,14 @@ sub process_GR_UTF8 {
                    _ 3b1 3b2 3d0 3b3 3b4 3b5 3db 3dd 3b6 3b7 3b8 3b9 3ba 3bb 3bc
                    3bd 3bf 3be 3c0 3d9 3c1 3c3 3c2 3c4 3c5 3c6 3c7 3c8 3c9 3e1', # 5/0 Bibliography 5426-1980 53
 	   # Q 5/1 Ext-37 54
-	   'R' => 'i646 # a3 e0 b0 e7 a7 ^ b5 e9 f9 e8 a8', # 5/2  FR old 25
+	   'R' => ':iso646 # a3 e0 b0 e7 a7 ^ b5 e9 f9 e8 a8', # 5/2  FR old 25
 	   # S 5/3 Greek Biblio 5428-1980 55
-	   'T' => 'ascii 24=a5 7e=af', # 5/4  CN 57
+	   'T' => ':ascii 24=a5 7e=af', # 5/4  CN 57
 	   # U 5/5 Latin-Greek GR-honeywell 27
 	   # V 5/6 UK teletext 47
-	   'W' => 'ascii 21-23=_ 26=_ 3f-40=_ 5c=_ 5e-60=_ 7b=_ 7d-7e=_', # 5/7 INIS subset of IRV 49
+	   'W' => ':ascii 21-23=_ 26=_ 3f-40=_ 5c=_ 5e-60=_ 7b=_ 7d-7e=_', # 5/7 INIS subset of IRV 49
 	   # X 5/8 Greek Biblio 5428 31
-	   'Y' => 'i646 # a3 a7 b0 e7 e9 ^ f9 e0 f2 e8 ec', # 5/9  IT 15
+	   'Y' => ':iso646 # a3 a7 b0 e7 e9 ^ f9 e0 f2 e8 ec', # 5/9  IT 15
 	   # Z 5/10 ES-o 17
 	   # [ 5/11 Greek o 18
 	   # \ 5/12 Latin-greek o 19
@@ -1379,8 +1379,8 @@ sub process_GR_UTF8 {
                    2080 2081 2082 2083 2084 2085 2086 2087 2088 2089 3a3 3bc 3bd 3c9 3c0', # 5/13 INIS ex-49 50
 	   # ^ 5/14 INIS Cyr ex-49 51
 	   # _ 5/15 Arabic Morocco 59
-	   '`' => 'i646 # $ @ c6 d8 c5 ^ ` e6 f8 e5 af', # 6/0  NO
-	   'a' => 'i646 # a7 @ c6 d8 c5 ^ ` e6 f8 e5 |', # 6/1  NO-2 old
+	   '`' => ':iso646 # $ @ c6 d8 c5 ^ ` e6 f8 e5 af', # 6/0  NO
+	   'a' => ':iso646 # a7 @ c6 d8 c5 ^ ` e6 f8 e5 |', # 6/1  NO-2 old
 	   'b' => '   a1 a2 a3  $ a5  # a7 a4 2018 201c ab 2190 2191 2192 2193
                    b0 b1 b2 b3 d7 b5 b6 b7 f7 2019 201d bb   bc   bd   be   bf
                    344 300 301 302 303 304 306 307 308 _ 30a 327 _ 30b 328 30c
@@ -1397,35 +1397,35 @@ sub process_GR_UTF8 {
                    af 237a 22a5 2229 230a 220a 5f 2207 2206 2373 2218 27 2395 | 22a4 25cb
                    * ? 2374 2308 7e 2193 222a 2375 2283 2191 2282 2190 22a2 2192 2265 2212
                    22c4 61-7A=41 { 22a3 } 24', # 6/5 APL 68
-	   'f' => 'i646 # a3 e0 b0 e7 a7 ^ b5 e9 f9 e8 a8', # 6/6  FR
-	   'g' => 'i646 # a4 b4 c3 c7 d5 ^ ` e3 e7 f5 af', # 6/7  PT-i
-	   'h' => 'i646 # $ b7 a1 d1 c7 bf ` b4 f1 e7 a8', # 6/8  ES
-	   'i' => 'i646 # a4 c1 c9 d6 dc ^ e1 e9 f6 fc 2dd', # 6/9  HU
+	   'f' => ':iso646 # a3 e0 b0 e7 a7 ^ b5 e9 f9 e8 a8', # 6/6  FR
+	   'g' => ':iso646 # a4 b4 c3 c7 d5 ^ ` e3 e7 f5 af', # 6/7  PT-i
+	   'h' => ':iso646 # $ b7 a1 d1 c7 bf ` b4 f1 e7 a8', # 6/8  ES
+	   'i' => ':iso646 # a4 c1 c9 d6 dc ^ e1 e9 f6 fc 2dd', # 6/9  HU
 	   # j 6/10 Greek ELOT withdrawn 88
 	   # k 6/11 Arabic ASMO-449 ISO9036 89
 	   # l 6/12 Supl.Set for reg no2 90
 	   'm' => '_ 22 a3 24-3b=24 3c=2440 = 2441 ? _ 41-5a=41 _ a5 2442', # 6/13 JP OCR-A 91
-	   'n' => 'ascii 5c=a5 60=_ 7e=_', # 6/14 JP OCR-B 92
+	   'n' => ':ascii 5c=a5 60=_ 7e=_', # 6/14 JP OCR-B 92
 	   'o' => '_ _ a3 a4 5c _ a7', # 6/15 JP OCR-B Add. 93
-	   'p' => 'ascii 5c=a5 60-7e=_ 7c=|', # 7/0 JP OCR hand 94
+	   'p' => ':ascii 5c=a5 60-7e=_ 7c=|', # 7/0 JP OCR hand 94
 	   'q' => '25=5c', # 7/1 JP OCR hand add 95
 	   'r' => '_ ff62 ff63 _ _ ff66 30-5f=ff70', # 7/2 JP OCR katakana 96
 	   # s 7/3 E13B 98
 	   # t 7/4 Suppl. videotex/teletext ANSI 99
 	   # u 7/5 CCITT teletext graphics1 102
 	   # v 7/6 CCITT teletext graphics2 103
-	   'w' => 'i646 # $ e0 e2 e7 ea ee f4 e9 f9 e8 fb', # 7/7  CA1
-	   'x' => 'i646 # $ e0 e2 e7 ea c9 f4 e9 f9 e8 fb', # 7/8  CA2
+	   'w' => ':iso646 # $ e0 e2 e7 ea ee f4 e9 f9 e8 fb', # 7/7  CA1
+	   'x' => ':iso646 # $ e0 e2 e7 ea c9 f4 e9 f9 e8 fb', # 7/8  CA2
 	   # z 7/9 Mosaic-1 CCITT 137
-	   'z' => 'i646 # $ 17d 160 110 106 10c 17e 161 111 107 10d', # 7/10 YU
+	   'z' => ':iso646 # $ 17d 160 110 106 10c 17e 161 111 107 10d', # 7/10 YU
 	   # { 7/11 YU Cyrillic 146
 	   # | 7/12 Supl Grapix CCITT Data Syntax 3 128
 	   # } 7/13 Macedonia Cyr 147
 	   # ~ 7/14 empty
 	   # !@ 2/1 4/0 Greek Primary CCITT 150
-	   '!A' => 'i646 # a4 @ a1 d1 ] bf ` b4 f1 [ a8', # 2/1 4/1  CU
-	   '!B' => 'i646 _ _ _ _ _ _ _ _ _ _ _ _',	  # 2/1 4/2 IRV 646 170
-	   '!C'=> 'i646 a3 a4 d3 c9 cd da c1 f3 e9 ed fa e1', # 2/1 4/3  IE
+	   '!A' => ':iso646 # a4 @ a1 d1 ] bf ` b4 f1 [ a8', # 2/1 4/1  CU
+	   '!B' => ':iso646 _ _ _ _ _ _ _ _ _ _ _ _',	  # 2/1 4/2 IRV 646 170
+	   '!C' => ':iso646 a3 a4 d3 c9 cd da c1 f3 e9 ed fa e1', # 2/1 4/3  IE
 	   # !D 2/1 4/4 Turkmen 230
 	   # !E 2/1 4/5 ANSEL Biblio 231
 	   # !F 2/1 4/6 Turkmen for 8bit 232
@@ -1494,10 +1494,10 @@ sub process_GR_UTF8 {
 	$o[127] = undef;
 	my @pos = ();
 
-	if ($t[0] eq 'ascii') {
+	if ($t[0] eq ':ascii') {
 	    shift @t;
 	    @o[32 .. 126] = map { chr } (32 .. 126);
-	} elsif ($t[0] eq 'i646') {
+	} elsif ($t[0] eq ':iso646') {
 	    shift @t;
 	    @o[32 .. 126] = map { chr } (32 .. 126);
 	    @pos = (0x23, 0x24,
@@ -1526,14 +1526,12 @@ sub process_GR_UTF8 {
 	return $SBCStable{$set} if exists $SBCStable{$set};
 	my @tbl = ();
 
-	my $key = $I646def{B}; # US ASCII
-	my $table = $I646def{$set};
+	my $table = $SBCS_definitions{$set};
 	my $tbl = undef;
 
 	if (defined $table) {
 		$tbl = _decode_sbcssrc($table);
-	}
-	if (defined $encode_cache{$set}) {
+	} elsif (defined $encode_cache{$set}) {
 	    my $enc = get_encode_cache($set);
 	    if ($enc) {
 		for my $c (32 .. 127) {
