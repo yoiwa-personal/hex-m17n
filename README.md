@@ -237,6 +237,8 @@ If wide characters are found, fillers are also put in
 the character dump format, as shown in the second example
 (in non-colored output, fillers will be invisible.)
 
+The option `-c2` shows ASCII spaces as `sp`.
+
 Note: outputs have "reversible" or "lossless" property
 only when the input coding system is set to "ascii" (binary).
 
@@ -344,7 +346,7 @@ changed, extended or removed in future releases.
     based on an ancient ISO 2047 abbreviations.
 
     (For those who know memory of traditional Japanese PC-9801
-    environment, the two-character mnemonics have bee seen there.)
+    environment, the two-character mnemonics have been seen there.)
 
  *  ``--cjk-region``:
 
